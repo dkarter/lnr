@@ -1,0 +1,41 @@
+[tasks.build]
+description = "Build the binary"
+run = "go build -o lnr main.go"
+
+[tasks.install]
+description = "Install to /usr/local/bin"
+depends = ["build"]
+run = "sudo mv lnr /usr/local/bin/"
+
+[tasks.install-user]
+description = "Install to ~/bin (no sudo required)"
+depends = ["build"]
+run = """
+mkdir -p ~/bin
+mv lnr ~/bin/
+echo "Add ~/bin to your PATH if not already there:"
+echo "  export PATH=$HOME/bin:$PATH"
+"""
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "rm -f lnr"
+
+[tasks.run]
+description = "Run without building"
+run = "go run main.go"
+
+[tasks.deps]
+description = "Download dependencies"
+run = "go get github.com/charmbracelet/huh"
+
+[tasks.info]
+description = "Show version info"
+run = """
+echo "Linear Ticket Form"
+echo "=================="
+go version
+"""
+
+[tools]
+go = "1.25.3"
