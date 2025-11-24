@@ -3,18 +3,38 @@ description = "Build the binary"
 run = "go build -o lnr main.go"
 
 [tasks.install]
-description = "Install to /usr/local/bin"
-depends = ["build"]
-run = "sudo mv lnr /usr/local/bin/"
-
-[tasks.install-user]
-description = "Install to ~/bin (no sudo required)"
-depends = ["build"]
+description = "Build and install the binary"
 run = """
-mkdir -p ~/bin
-mv lnr ~/bin/
-echo "Add ~/bin to your PATH if not already there:"
-echo "  export PATH=$HOME/bin:$PATH"
+echo "Building lnr..."
+go build -o lnr main.go
+echo "Installing to ~/.local/bin/lnr..."
+mkdir -p ~/.local/bin
+cp lnr ~/.local/bin/
+rm lnr
+echo "✅ Installation complete!"
+echo ""
+echo "📝 To add a convenient alias for opening the form in a tmux popup, add this to your ~/.zshrc:"
+echo ""
+echo "# LNR form in tmux popup"
+echo 'lnr() {'
+echo '  if [[ -n "$TMUX" ]]; then'
+echo '    tmux popup -w 80% -h 80% lnr'
+echo '  else'
+echo '    lnr'
+echo '  fi'
+echo '}'
+echo ""
+echo "Then run: source ~/.zshrc"
+echo
+echo "You can also add a tmux bindings to your tmux config:"
+echo
+echo '  bind-key "i" display-popup -E -w 80% -h 80% lnr '
+echo
+echo 'And you can map a key in Ghostty to launch the tmux shortcut:'
+echo
+echo '  # create a new linear issue'
+echo '  keybind = super+shift+i=text:\\x1ai'
+echo
 """
 
 [tasks.clean]
