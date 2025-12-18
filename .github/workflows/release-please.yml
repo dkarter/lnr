@@ -21,5 +21,3 @@ jobs:
         with:
           # Use Go release type for semantic versioning
           release-type: go
-          # Package name
-          package-name: lnr
