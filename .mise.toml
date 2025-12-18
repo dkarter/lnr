@@ -41,6 +41,17 @@ echo
 description = "Clean build artifacts"
 run = "rm -f lnr"
 
+[tasks.uninstall]
+description = "Uninstall the dev version"
+run = """
+if [ -f ~/.local/bin/lnr ]; then
+  rm ~/.local/bin/lnr
+  echo "✅ Uninstalled ~/.local/bin/lnr"
+else
+  echo "ℹ️  lnr is not installed in ~/.local/bin"
+fi
+"""
+
 [tasks.run]
 description = "Run without building"
 run = "go run main.go"
