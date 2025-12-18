@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/dkarter/lnr/compare/v1.0.0...v1.0.1) (2025-12-18)
+
+
+### Bug Fixes
+
+* attach binaries to release ([62b1819](https://github.com/dkarter/lnr/commit/62b1819e800449198a9a9670227a7b796cd5cda9))
+
 ## 1.0.0 (2025-12-18)
 
 
