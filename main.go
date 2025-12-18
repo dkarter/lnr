@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ type LinearTicket struct {
 	Labels      []string
 	TeamId      string
 	AssigneeId  string
+	StatusId    string
 }
 
 type UserSelections struct {
@@ -31,6 +33,7 @@ type UserSelections struct {
 	AssigneeId string   `json:"assigneeId"`
 	Labels     []string `json:"labels"`
 	Estimate   string   `json:"estimate"`
+	StatusId   string   `json:"statusId"`
 }
 
 type CacheEntry struct {
@@ -52,6 +55,12 @@ type User struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+type WorkflowState struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 func getCacheDir() string {
@@ -97,6 +106,14 @@ func saveToCache(key string, data interface{}) error {
 	}
 
 	return os.WriteFile(cachePath, jsonData, 0644)
+}
+
+func clearCache() error {
+	cacheDir := getCacheDir()
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return nil // Cache directory doesn't exist, nothing to clear
+	}
+	return os.RemoveAll(cacheDir)
 }
 
 func getString(data map[string]interface{}, key string) string {
@@ -147,69 +164,119 @@ func makeLinearRequest(apiKey, query string, variables map[string]interface{}) (
 }
 
 func fetchTeamLabels(apiKey, teamId string) ([]Label, error) {
-	query := `
-		query TeamLabels($teamId: String!) {
-			team(id: $teamId) {
-				labels {
-					nodes {
-						id
-						name
+	var labelList []Label
+	var after string
+
+	for {
+		query := `
+			query TeamLabels($teamId: String!, $after: String) {
+				team(id: $teamId) {
+					labels(first: 50, after: $after) {
+						nodes {
+							id
+							name
+						}
+						pageInfo {
+							hasNextPage
+							endCursor
+						}
 					}
 				}
 			}
+		`
+
+		variables := map[string]interface{}{"teamId": teamId}
+		if after != "" {
+			variables["after"] = after
 		}
-	`
 
-	result, err := makeLinearRequest(apiKey, query, map[string]interface{}{"teamId": teamId})
-	if err != nil {
-		return nil, err
-	}
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
 
-	data := result["data"].(map[string]interface{})
-	team := data["team"].(map[string]interface{})
-	labels := team["labels"].(map[string]interface{})
-	nodes := labels["nodes"].([]interface{})
+		data := result["data"].(map[string]interface{})
+		team := data["team"].(map[string]interface{})
+		labels := team["labels"].(map[string]interface{})
+		nodes := labels["nodes"].([]interface{})
+		pageInfo := labels["pageInfo"].(map[string]interface{})
 
-	var labelList []Label
-	for _, node := range nodes {
-		label := node.(map[string]interface{})
-		labelList = append(labelList, Label{
-			ID:   label["id"].(string),
-			Name: label["name"].(string),
-		})
+		for _, node := range nodes {
+			label := node.(map[string]interface{})
+			labelList = append(labelList, Label{
+				ID:   label["id"].(string),
+				Name: label["name"].(string),
+			})
+		}
+
+		hasNextPage := pageInfo["hasNextPage"].(bool)
+		if !hasNextPage {
+			break
+		}
+
+		if endCursor, ok := pageInfo["endCursor"].(string); ok {
+			after = endCursor
+		} else {
+			break
+		}
 	}
 
 	return labelList, nil
 }
 
 func fetchTeams(apiKey string) ([]Team, error) {
-	query := `
-		query Teams {
-			teams {
-				nodes {
-					id
-					name
+	var teamList []Team
+	var after string
+
+	for {
+		query := `
+			query Teams($after: String) {
+				teams(first: 50, after: $after) {
+					nodes {
+						id
+						name
+					}
+					pageInfo {
+						hasNextPage
+						endCursor
+					}
 				}
 			}
+		`
+
+		variables := map[string]interface{}{}
+		if after != "" {
+			variables["after"] = after
 		}
-	`
 
-	result, err := makeLinearRequest(apiKey, query, nil)
-	if err != nil {
-		return nil, err
-	}
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
 
-	data := result["data"].(map[string]interface{})
-	teams := data["teams"].(map[string]interface{})
-	nodes := teams["nodes"].([]interface{})
+		data := result["data"].(map[string]interface{})
+		teams := data["teams"].(map[string]interface{})
+		nodes := teams["nodes"].([]interface{})
+		pageInfo := teams["pageInfo"].(map[string]interface{})
 
-	var teamList []Team
-	for _, node := range nodes {
-		team := node.(map[string]interface{})
-		teamList = append(teamList, Team{
-			ID:   team["id"].(string),
-			Name: team["name"].(string),
-		})
+		for _, node := range nodes {
+			team := node.(map[string]interface{})
+			teamList = append(teamList, Team{
+				ID:   team["id"].(string),
+				Name: team["name"].(string),
+			})
+		}
+
+		hasNextPage := pageInfo["hasNextPage"].(bool)
+		if !hasNextPage {
+			break
+		}
+
+		if endCursor, ok := pageInfo["endCursor"].(string); ok {
+			after = endCursor
+		} else {
+			break
+		}
 	}
 
 	return teamList, nil
@@ -240,44 +307,132 @@ func fetchTeamInfo(apiKey, teamId string) (*Team, error) {
 }
 
 func fetchTeamUsers(apiKey, teamId string) ([]User, error) {
-	query := `
-		query TeamUsers($teamId: String!) {
-			team(id: $teamId) {
-				organization {
-					users {
-						nodes {
-							id
-							name
-							email
+	var userList []User
+	var after string
+
+	for {
+		query := `
+			query TeamUsers($teamId: String!, $after: String) {
+				team(id: $teamId) {
+					organization {
+						users(first: 50, after: $after) {
+							nodes {
+								id
+								name
+								email
+							}
+							pageInfo {
+								hasNextPage
+								endCursor
+							}
 						}
 					}
 				}
 			}
+		`
+
+		variables := map[string]interface{}{"teamId": teamId}
+		if after != "" {
+			variables["after"] = after
 		}
-	`
 
-	result, err := makeLinearRequest(apiKey, query, map[string]interface{}{"teamId": teamId})
-	if err != nil {
-		return nil, err
-	}
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
 
-	data := result["data"].(map[string]interface{})
-	team := data["team"].(map[string]interface{})
-	org := team["organization"].(map[string]interface{})
-	users := org["users"].(map[string]interface{})
-	nodes := users["nodes"].([]interface{})
+		data := result["data"].(map[string]interface{})
+		team := data["team"].(map[string]interface{})
+		org := team["organization"].(map[string]interface{})
+		users := org["users"].(map[string]interface{})
+		nodes := users["nodes"].([]interface{})
+		pageInfo := users["pageInfo"].(map[string]interface{})
 
-	var userList []User
-	for _, node := range nodes {
-		user := node.(map[string]interface{})
-		userList = append(userList, User{
-			ID:    user["id"].(string),
-			Name:  user["name"].(string),
-			Email: user["email"].(string),
-		})
+		for _, node := range nodes {
+			user := node.(map[string]interface{})
+			userList = append(userList, User{
+				ID:    user["id"].(string),
+				Name:  user["name"].(string),
+				Email: user["email"].(string),
+			})
+		}
+
+		hasNextPage := pageInfo["hasNextPage"].(bool)
+		if !hasNextPage {
+			break
+		}
+
+		if endCursor, ok := pageInfo["endCursor"].(string); ok {
+			after = endCursor
+		} else {
+			break
+		}
 	}
 
 	return userList, nil
+}
+
+func fetchWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
+	var stateList []WorkflowState
+	var after string
+
+	for {
+		query := `
+			query TeamWorkflowStates($teamId: String!, $after: String) {
+				team(id: $teamId) {
+					states(first: 50, after: $after) {
+						nodes {
+							id
+							name
+							type
+						}
+						pageInfo {
+							hasNextPage
+							endCursor
+						}
+					}
+				}
+			}
+		`
+
+		variables := map[string]interface{}{"teamId": teamId}
+		if after != "" {
+			variables["after"] = after
+		}
+
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
+
+		data := result["data"].(map[string]interface{})
+		team := data["team"].(map[string]interface{})
+		states := team["states"].(map[string]interface{})
+		nodes := states["nodes"].([]interface{})
+		pageInfo := states["pageInfo"].(map[string]interface{})
+
+		for _, node := range nodes {
+			state := node.(map[string]interface{})
+			stateList = append(stateList, WorkflowState{
+				ID:   state["id"].(string),
+				Name: state["name"].(string),
+				Type: state["type"].(string),
+			})
+		}
+
+		hasNextPage := pageInfo["hasNextPage"].(bool)
+		if !hasNextPage {
+			break
+		}
+
+		if endCursor, ok := pageInfo["endCursor"].(string); ok {
+			after = endCursor
+		} else {
+			break
+		}
+	}
+
+	return stateList, nil
 }
 
 func getEstimateOptions(estimateType int) []huh.Option[string] {
@@ -317,6 +472,20 @@ func getEstimateOptions(estimateType int) []huh.Option[string] {
 }
 
 func main() {
+	// Parse command-line flags
+	clearCacheFlag := flag.Bool("clear-cache", false, "Clear the cache and refetch all data")
+	flag.Parse()
+
+	// Handle clear cache flag
+	if *clearCacheFlag {
+		if err := clearCache(); err != nil {
+			fmt.Printf("❌ Error clearing cache: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✅ Cache cleared successfully")
+		return
+	}
+
 	var ticket LinearTicket
 	var selections UserSelections
 
@@ -339,6 +508,7 @@ func main() {
 			TeamId:     getString(cachedData, "teamId"),
 			AssigneeId: getString(cachedData, "assigneeId"),
 			Estimate:   getString(cachedData, "estimate"),
+			StatusId:   getString(cachedData, "statusId"),
 		}
 		if labels, ok := cachedData["labels"].([]interface{}); ok {
 			for _, label := range labels {
@@ -376,11 +546,10 @@ func main() {
 		teamOptions[i] = huh.Option[string]{Key: team.Name, Value: team.ID}
 	}
 
-	// Select team
-	var selectedTeamId string
-	if selections.TeamId != "" {
-		selectedTeamId = selections.TeamId
-	} else {
+	// Select team - pre-select from cache and skip if already cached
+	var selectedTeamId string = selections.TeamId
+	if selectedTeamId == "" {
+		// No cached team, show selection
 		teamForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[string]().
@@ -393,6 +562,32 @@ func main() {
 		if err := teamForm.Run(); err != nil {
 			fmt.Println("Team selection cancelled or error:", err)
 			os.Exit(1)
+		}
+	} else {
+		// Team is cached, verify it still exists
+		teamExists := false
+		for _, team := range teams {
+			if team.ID == selectedTeamId {
+				teamExists = true
+				break
+			}
+		}
+		if !teamExists {
+			// Cached team no longer exists, show selection
+			selectedTeamId = ""
+			teamForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Team").
+						Description("Select the team for this ticket").
+						Options(teamOptions...).
+						Value(&selectedTeamId),
+				),
+			)
+			if err := teamForm.Run(); err != nil {
+				fmt.Println("Team selection cancelled or error:", err)
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -409,9 +604,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Fetch team labels and users
+	// Fetch team labels, users, and workflow states
 	var labels []Label
 	var users []User
+	var workflowStates []WorkflowState
 
 	if cachedLabels, found := loadFromCache("labels-"+selectedTeamId, cacheTTL); found {
 		// Convert cached data back to []Label
@@ -454,6 +650,27 @@ func main() {
 		saveToCache("users-"+selectedTeamId, users)
 	}
 
+	if cachedStates, found := loadFromCache("states-"+selectedTeamId, cacheTTL); found {
+		// Convert cached data back to []WorkflowState
+		cachedData := cachedStates.([]interface{})
+		workflowStates = make([]WorkflowState, len(cachedData))
+		for i, item := range cachedData {
+			itemMap := item.(map[string]interface{})
+			workflowStates[i] = WorkflowState{
+				ID:   itemMap["id"].(string),
+				Name: itemMap["name"].(string),
+				Type: getString(itemMap, "type"),
+			}
+		}
+	} else {
+		workflowStates, err = fetchWorkflowStates(apiKey, selectedTeamId)
+		if err != nil {
+			fmt.Printf("❌ Error fetching workflow states: %v\n", err)
+			os.Exit(1)
+		}
+		saveToCache("states-"+selectedTeamId, workflowStates)
+	}
+
 	// Create options
 	estimateOptions := getEstimateOptions(1) // Default to story points
 
@@ -470,11 +687,17 @@ func main() {
 		userOptions[i+1] = huh.Option[string]{Key: user.Name, Value: user.ID}
 	}
 
+	statusOptions := make([]huh.Option[string], len(workflowStates))
+	for i, state := range workflowStates {
+		statusOptions[i] = huh.Option[string]{Key: state.Name, Value: state.ID}
+	}
+
 	// Set default values from cache
 	ticket.TeamId = selectedTeamId
 	ticket.Estimate = selections.Estimate
 	ticket.Labels = selections.Labels
 	ticket.AssigneeId = selections.AssigneeId
+	ticket.StatusId = selections.StatusId
 
 	// Create the form
 	form := huh.NewForm(
@@ -495,6 +718,12 @@ func main() {
 				Description("Detailed description of the ticket").
 				Value(&ticket.Description).
 				Lines(5),
+
+			huh.NewSelect[string]().
+				Title("Status").
+				Description("Select the status for this ticket").
+				Options(statusOptions...).
+				Value(&ticket.StatusId),
 
 			huh.NewSelect[string]().
 				Title("Estimate").
@@ -543,6 +772,18 @@ func main() {
 	}
 	fmt.Printf("Estimate:    %s\n", estimateText)
 
+	// Show status name
+	statusName := "Unknown"
+	if ticket.StatusId != "" {
+		for _, state := range workflowStates {
+			if state.ID == ticket.StatusId {
+				statusName = state.Name
+				break
+			}
+		}
+	}
+	fmt.Printf("Status:      %s\n", statusName)
+
 	// Show assignee name
 	assigneeName := "No Assignee"
 	if ticket.AssigneeId != "" {
@@ -587,6 +828,7 @@ func main() {
 		AssigneeId: ticket.AssigneeId,
 		Labels:     ticket.Labels,
 		Estimate:   ticket.Estimate,
+		StatusId:   ticket.StatusId,
 	}
 	saveToCache("user-selections", selections)
 
@@ -686,6 +928,11 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	// Add assignee if provided
 	if ticket.AssigneeId != "" {
 		input["assigneeId"] = ticket.AssigneeId
+	}
+
+	// Add status if provided
+	if ticket.StatusId != "" {
+		input["stateId"] = ticket.StatusId
 	}
 
 	payload := map[string]interface{}{
