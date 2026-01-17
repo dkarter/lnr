@@ -69,5 +69,5 @@ go version
 """
 
 [tools]
-go = "1.25.3"
+go = "1.25.6"
 goreleaser = "2"
