@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/dkarter/lnr/compare/v1.0.1...v1.0.2) (2026-05-08)
+
+
+### Bug Fixes
+
+* update release Go toolchain ([#10](https://github.com/dkarter/lnr/issues/10)) ([3b6d656](https://github.com/dkarter/lnr/commit/3b6d6568f3f48a8baf0e99d8a761b75fce5ddac1))
+
 ## [1.0.1](https://github.com/dkarter/lnr/compare/v1.0.0...v1.0.1) (2025-12-18)
 
 
