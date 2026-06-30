@@ -16,7 +16,7 @@ A beautiful TUI form for creating Linear tickets from the command line, perfect 
 ### Using mise (Recommended)
 
 ```bash
-mise use -g ubi:dkarter/lnr
+mise use -g github:dkarter/lnr
 ```
 
 ### From Source
