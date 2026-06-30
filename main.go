@@ -28,6 +28,17 @@ type LinearTicket struct {
 	StatusId    string
 }
 
+type CreatedIssue struct {
+	Identifier string
+	BranchName string
+}
+
+type Issue struct {
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
+	BranchName string `json:"branchName"`
+}
+
 type UserSelections struct {
 	TeamId     string   `json:"teamId"`
 	AssigneeId string   `json:"assigneeId"`
@@ -63,6 +74,9 @@ type WorkflowState struct {
 	Type string `json:"type"`
 }
 
+const noCacheExpiration time.Duration = 0
+const userSelectionsCacheKey = "user-selections"
+
 func getCacheDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "lnr")
@@ -86,11 +100,30 @@ func loadFromCache(key string, ttl time.Duration) (interface{}, bool) {
 		return nil, false
 	}
 
-	if time.Since(entry.Timestamp) > ttl {
+	if ttl > 0 && time.Since(entry.Timestamp) > ttl {
 		return nil, false
 	}
 
 	return entry.Data, true
+}
+
+func loadTypedFromCache[T any](key string, ttl time.Duration) (T, bool) {
+	var target T
+	data, found := loadFromCache(key, ttl)
+	if !found {
+		return target, false
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return target, false
+	}
+
+	if err := json.Unmarshal(jsonData, &target); err != nil {
+		return target, false
+	}
+
+	return target, true
 }
 
 func saveToCache(key string, data interface{}) error {
@@ -114,6 +147,40 @@ func clearCache() error {
 		return nil // Cache directory doesn't exist, nothing to clear
 	}
 	return os.RemoveAll(cacheDir)
+}
+
+func getAPIKey() string {
+	apiKey := os.Getenv("LINEAR_API_KEY")
+	if apiKey == "" {
+		fmt.Println("❌ LINEAR_API_KEY environment variable not set")
+		fmt.Println("Set this to create tickets in Linear")
+		fmt.Println("\nExample:")
+		fmt.Println("  export LINEAR_API_KEY='your-api-key'")
+		os.Exit(1)
+	}
+
+	return apiKey
+}
+
+func loadUserSelections() UserSelections {
+	selections, found := loadTypedFromCache[UserSelections](userSelectionsCacheKey, noCacheExpiration)
+	if !found {
+		return UserSelections{}
+	}
+
+	return selections
+}
+
+func saveUserSelections(selections UserSelections) error {
+	return saveToCache(userSelectionsCacheKey, selections)
+}
+
+func fallbackBranchName(issue CreatedIssue) string {
+	if issue.BranchName != "" {
+		return issue.BranchName
+	}
+
+	return strings.ToLower(issue.Identifier)
 }
 
 func getString(data map[string]interface{}, key string) string {
@@ -435,6 +502,124 @@ func fetchWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
 	return stateList, nil
 }
 
+func loadTeams(apiKey string) ([]Team, error) {
+	if teams, found := loadTypedFromCache[[]Team]("teams", noCacheExpiration); found {
+		return teams, nil
+	}
+
+	teams, err := fetchTeams(apiKey)
+	if err != nil {
+		return nil, err
+	}
+	saveToCache("teams", teams)
+
+	return teams, nil
+}
+
+func loadTeamLabels(apiKey, teamId string) ([]Label, error) {
+	if labels, found := loadTypedFromCache[[]Label]("labels-"+teamId, noCacheExpiration); found {
+		return labels, nil
+	}
+
+	labels, err := fetchTeamLabels(apiKey, teamId)
+	if err != nil {
+		return nil, err
+	}
+	saveToCache("labels-"+teamId, labels)
+
+	return labels, nil
+}
+
+func loadTeamUsers(apiKey, teamId string) ([]User, error) {
+	if users, found := loadTypedFromCache[[]User]("users-"+teamId, noCacheExpiration); found {
+		return users, nil
+	}
+
+	users, err := fetchTeamUsers(apiKey, teamId)
+	if err != nil {
+		return nil, err
+	}
+	saveToCache("users-"+teamId, users)
+
+	return users, nil
+}
+
+func loadWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
+	if states, found := loadTypedFromCache[[]WorkflowState]("states-"+teamId, noCacheExpiration); found {
+		return states, nil
+	}
+
+	states, err := fetchWorkflowStates(apiKey, teamId)
+	if err != nil {
+		return nil, err
+	}
+	saveToCache("states-"+teamId, states)
+
+	return states, nil
+}
+
+func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
+	var issues []Issue
+	var after string
+
+	for len(issues) < 250 {
+		query := `
+			query TeamIssues($teamId: String!, $after: String) {
+				team(id: $teamId) {
+					issues(first: 50, after: $after, orderBy: updatedAt) {
+						nodes {
+							identifier
+							title
+							branchName
+						}
+						pageInfo {
+							hasNextPage
+							endCursor
+						}
+					}
+				}
+			}
+		`
+
+		variables := map[string]interface{}{"teamId": teamId}
+		if after != "" {
+			variables["after"] = after
+		}
+
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
+
+		data := result["data"].(map[string]interface{})
+		team := data["team"].(map[string]interface{})
+		issueConnection := team["issues"].(map[string]interface{})
+		nodes := issueConnection["nodes"].([]interface{})
+		pageInfo := issueConnection["pageInfo"].(map[string]interface{})
+
+		for _, node := range nodes {
+			issue := node.(map[string]interface{})
+			issues = append(issues, Issue{
+				Identifier: issue["identifier"].(string),
+				Title:      issue["title"].(string),
+				BranchName: getString(issue, "branchName"),
+			})
+		}
+
+		if hasNextPage := pageInfo["hasNextPage"].(bool); !hasNextPage {
+			break
+		}
+
+		if endCursor, ok := pageInfo["endCursor"].(string); ok {
+			after = endCursor
+		} else {
+			break
+		}
+	}
+
+	return issues, nil
+}
+
 func getEstimateOptions(estimateType int) []huh.Option[string] {
 	switch estimateType {
 	case 0: // No estimates
@@ -471,9 +656,274 @@ func getEstimateOptions(estimateType int) []huh.Option[string] {
 	}
 }
 
+func teamOptions(teams []Team) []huh.Option[string] {
+	options := make([]huh.Option[string], len(teams))
+	for i, team := range teams {
+		options[i] = huh.Option[string]{Key: team.Name, Value: team.ID}
+	}
+
+	return options
+}
+
+func labelOptions(labels []Label) ([]huh.Option[string], map[string]string) {
+	options := make([]huh.Option[string], len(labels))
+	labelMap := make(map[string]string)
+	for i, label := range labels {
+		options[i] = huh.Option[string]{Key: label.Name, Value: label.Name}
+		labelMap[label.Name] = label.ID
+	}
+
+	return options, labelMap
+}
+
+func findTeam(teams []Team, teamId string) *Team {
+	for _, team := range teams {
+		if team.ID == teamId {
+			return &team
+		}
+	}
+
+	return nil
+}
+
+func requireDefaultTeam(selections UserSelections) string {
+	if selections.TeamId == "" {
+		fmt.Println("❌ No default team set")
+		fmt.Println("Run `lnr set-team` first")
+		os.Exit(1)
+	}
+
+	return selections.TeamId
+}
+
+func runSetTeam(apiKey string) {
+	teams, err := loadTeams(apiKey)
+	if err != nil {
+		fmt.Printf("❌ Error fetching teams: %v\n", err)
+		os.Exit(1)
+	}
+
+	selections := loadUserSelections()
+	selectedTeamId := selections.TeamId
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Default Team").
+				Description("Filter and select the team to use for fast actions").
+				Options(teamOptions(teams)...).
+				Filtering(true).
+				Value(&selectedTeamId),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		fmt.Println("Team selection cancelled or error:", err)
+		os.Exit(1)
+	}
+
+	if selections.TeamId != selectedTeamId {
+		selections.AssigneeId = ""
+		selections.Labels = nil
+		selections.StatusId = ""
+	}
+	selections.TeamId = selectedTeamId
+	if err := saveUserSelections(selections); err != nil {
+		fmt.Printf("❌ Error saving default team: %v\n", err)
+		os.Exit(1)
+	}
+
+	selectedTeam := findTeam(teams, selectedTeamId)
+	if selectedTeam != nil {
+		fmt.Printf("✅ Default team set to %s\n", selectedTeam.Name)
+		return
+	}
+	fmt.Println("✅ Default team saved")
+}
+
+func runSetLabels(apiKey string) {
+	selections := loadUserSelections()
+	teamId := requireDefaultTeam(selections)
+
+	labels, err := loadTeamLabels(apiKey, teamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching labels: %v\n", err)
+		os.Exit(1)
+	}
+
+	selectedLabels := selections.Labels
+	options, _ := labelOptions(labels)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Default Labels").
+				Description("Filter and select labels to apply in fast mode").
+				Options(options...).
+				Filtering(true).
+				Value(&selectedLabels).
+				Limit(4),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		fmt.Println("Label selection cancelled or error:", err)
+		os.Exit(1)
+	}
+
+	selections.Labels = selectedLabels
+	if err := saveUserSelections(selections); err != nil {
+		fmt.Printf("❌ Error saving default labels: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(selectedLabels) == 0 {
+		fmt.Println("✅ Default labels cleared")
+		return
+	}
+	fmt.Printf("✅ Default labels set to %s\n", strings.Join(selectedLabels, ", "))
+}
+
+func runSetEstimate() {
+	selections := loadUserSelections()
+	selectedEstimate := selections.Estimate
+	estimateOptions := getEstimateOptions(1)
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Default Estimate").
+				Description("Select the estimate to apply in fast mode").
+				Options(estimateOptions...).
+				Value(&selectedEstimate),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		fmt.Println("Estimate selection cancelled or error:", err)
+		os.Exit(1)
+	}
+
+	selections.Estimate = selectedEstimate
+	if err := saveUserSelections(selections); err != nil {
+		fmt.Printf("❌ Error saving default estimate: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, option := range estimateOptions {
+		if option.Value == selectedEstimate {
+			fmt.Printf("✅ Default estimate set to %s\n", option.Key)
+			return
+		}
+	}
+	fmt.Println("✅ Default estimate saved")
+}
+
+func runFastCreate(apiKey, title string) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		fmt.Println("❌ Title cannot be empty")
+		os.Exit(1)
+	}
+
+	selections := loadUserSelections()
+	teamId := requireDefaultTeam(selections)
+	labels, err := loadTeamLabels(apiKey, teamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching labels: %v\n", err)
+		os.Exit(1)
+	}
+	_, labelMap := labelOptions(labels)
+
+	issue, err := createLinearTicket(apiKey, LinearTicket{
+		Title:      title,
+		TeamId:     teamId,
+		Labels:     selections.Labels,
+		Estimate:   selections.Estimate,
+		AssigneeId: selections.AssigneeId,
+		StatusId:   selections.StatusId,
+	}, labelMap)
+	if err != nil {
+		fmt.Printf("❌ Error creating ticket: %v\n", err)
+		os.Exit(1)
+	}
+
+	branchName := fallbackBranchName(issue)
+	if err := clipboard.WriteAll(branchName); err != nil {
+		fmt.Println(branchName)
+		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
+		return
+	}
+
+	fmt.Println(branchName)
+}
+
+func runIssueSearch(apiKey string) {
+	selections := loadUserSelections()
+	teamId := requireDefaultTeam(selections)
+
+	issues, err := fetchTeamIssues(apiKey, teamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching issues: %v\n", err)
+		os.Exit(1)
+	}
+	if len(issues) == 0 {
+		fmt.Println("No issues found for the default team")
+		return
+	}
+
+	issueByKey := make(map[string]Issue, len(issues))
+	options := make([]huh.Option[string], len(issues))
+	for i, issue := range issues {
+		key := issue.Identifier + " " + issue.Title
+		issueByKey[key] = issue
+		options[i] = huh.Option[string]{Key: key, Value: key}
+	}
+
+	selectedIssueKey := ""
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Issue").
+				Description("Filter issues from the default team").
+				Options(options...).
+				Filtering(true).
+				Value(&selectedIssueKey),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		fmt.Println("Issue selection cancelled or error:", err)
+		os.Exit(1)
+	}
+
+	issue := issueByKey[selectedIssueKey]
+	branchName := issue.BranchName
+	if branchName == "" {
+		branchName = strings.ToLower(issue.Identifier)
+	}
+
+	if err := clipboard.WriteAll(branchName); err != nil {
+		fmt.Println(branchName)
+		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
+		return
+	}
+
+	fmt.Println(branchName)
+}
+
 func main() {
 	// Parse command-line flags
 	clearCacheFlag := flag.Bool("clear-cache", false, "Clear the cache and refetch all data")
+	fastTitleFlag := flag.String("fast", "", "Create a Linear issue from a title and print the branch name")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr fast <title>\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	// Handle clear cache flag
@@ -485,66 +935,55 @@ func main() {
 		fmt.Println("✅ Cache cleared successfully")
 		return
 	}
+	if *fastTitleFlag != "" {
+		runFastCreate(getAPIKey(), *fastTitleFlag)
+		return
+	}
+
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "fast":
+			runFastCreate(getAPIKey(), strings.Join(args[1:], " "))
+		case "issue":
+			runIssueSearch(getAPIKey())
+		case "set-team":
+			runSetTeam(getAPIKey())
+		case "set-labels":
+			runSetLabels(getAPIKey())
+		case "set-estimate":
+			runSetEstimate()
+		case "reset":
+			if err := clearCache(); err != nil {
+				fmt.Printf("❌ Error clearing cache: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✅ Cache cleared successfully")
+		case "help", "-h", "--help":
+			flag.Usage()
+		default:
+			fmt.Printf("Unknown command: %s\n\n", args[0])
+			flag.Usage()
+			os.Exit(1)
+		}
+		return
+	}
 
 	var ticket LinearTicket
-	var selections UserSelections
+	selections := loadUserSelections()
 
 	// Get API credentials
-	apiKey := os.Getenv("LINEAR_API_KEY")
-	if apiKey == "" {
-		fmt.Println("❌ LINEAR_API_KEY environment variable not set")
-		fmt.Println("Set this to create tickets in Linear")
-		fmt.Println("\nExample:")
-		fmt.Println("  export LINEAR_API_KEY='your-api-key'")
+	apiKey := getAPIKey()
+
+	// Fetch teams
+	teams, err := loadTeams(apiKey)
+	if err != nil {
+		fmt.Printf("❌ Error fetching teams: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Load cached selections
-	cacheTTL := 24 * time.Hour
-	if cachedSelections, found := loadFromCache("user-selections", cacheTTL); found {
-		// Convert cached data back to UserSelections
-		cachedData := cachedSelections.(map[string]interface{})
-		selections = UserSelections{
-			TeamId:     getString(cachedData, "teamId"),
-			AssigneeId: getString(cachedData, "assigneeId"),
-			Estimate:   getString(cachedData, "estimate"),
-			StatusId:   getString(cachedData, "statusId"),
-		}
-		if labels, ok := cachedData["labels"].([]interface{}); ok {
-			for _, label := range labels {
-				selections.Labels = append(selections.Labels, label.(string))
-			}
-		}
-	}
-
-	// Fetch teams
-	var teams []Team
-	var err error
-	if cachedTeams, found := loadFromCache("teams", cacheTTL); found {
-		// Convert cached data back to []Team
-		cachedData := cachedTeams.([]interface{})
-		teams = make([]Team, len(cachedData))
-		for i, item := range cachedData {
-			itemMap := item.(map[string]interface{})
-			teams[i] = Team{
-				ID:   itemMap["id"].(string),
-				Name: itemMap["name"].(string),
-			}
-		}
-	} else {
-		teams, err = fetchTeams(apiKey)
-		if err != nil {
-			fmt.Printf("❌ Error fetching teams: %v\n", err)
-			os.Exit(1)
-		}
-		saveToCache("teams", teams)
-	}
-
 	// Create team selection options
-	teamOptions := make([]huh.Option[string], len(teams))
-	for i, team := range teams {
-		teamOptions[i] = huh.Option[string]{Key: team.Name, Value: team.ID}
-	}
+	teamOptions := teamOptions(teams)
 
 	// Select team - pre-select from cache and skip if already cached
 	var selectedTeamId string = selections.TeamId
@@ -609,77 +1048,28 @@ func main() {
 	var users []User
 	var workflowStates []WorkflowState
 
-	if cachedLabels, found := loadFromCache("labels-"+selectedTeamId, cacheTTL); found {
-		// Convert cached data back to []Label
-		cachedData := cachedLabels.([]interface{})
-		labels = make([]Label, len(cachedData))
-		for i, item := range cachedData {
-			itemMap := item.(map[string]interface{})
-			labels[i] = Label{
-				ID:   itemMap["id"].(string),
-				Name: itemMap["name"].(string),
-			}
-		}
-	} else {
-		labels, err = fetchTeamLabels(apiKey, selectedTeamId)
-		if err != nil {
-			fmt.Printf("❌ Error fetching labels: %v\n", err)
-			os.Exit(1)
-		}
-		saveToCache("labels-"+selectedTeamId, labels)
+	labels, err = loadTeamLabels(apiKey, selectedTeamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching labels: %v\n", err)
+		os.Exit(1)
 	}
 
-	if cachedUsers, found := loadFromCache("users-"+selectedTeamId, cacheTTL); found {
-		// Convert cached data back to []User
-		cachedData := cachedUsers.([]interface{})
-		users = make([]User, len(cachedData))
-		for i, item := range cachedData {
-			itemMap := item.(map[string]interface{})
-			users[i] = User{
-				ID:    itemMap["id"].(string),
-				Name:  itemMap["name"].(string),
-				Email: itemMap["email"].(string),
-			}
-		}
-	} else {
-		users, err = fetchTeamUsers(apiKey, selectedTeamId)
-		if err != nil {
-			fmt.Printf("❌ Error fetching users: %v\n", err)
-			os.Exit(1)
-		}
-		saveToCache("users-"+selectedTeamId, users)
+	users, err = loadTeamUsers(apiKey, selectedTeamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching users: %v\n", err)
+		os.Exit(1)
 	}
 
-	if cachedStates, found := loadFromCache("states-"+selectedTeamId, cacheTTL); found {
-		// Convert cached data back to []WorkflowState
-		cachedData := cachedStates.([]interface{})
-		workflowStates = make([]WorkflowState, len(cachedData))
-		for i, item := range cachedData {
-			itemMap := item.(map[string]interface{})
-			workflowStates[i] = WorkflowState{
-				ID:   itemMap["id"].(string),
-				Name: itemMap["name"].(string),
-				Type: getString(itemMap, "type"),
-			}
-		}
-	} else {
-		workflowStates, err = fetchWorkflowStates(apiKey, selectedTeamId)
-		if err != nil {
-			fmt.Printf("❌ Error fetching workflow states: %v\n", err)
-			os.Exit(1)
-		}
-		saveToCache("states-"+selectedTeamId, workflowStates)
+	workflowStates, err = loadWorkflowStates(apiKey, selectedTeamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching workflow states: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Create options
 	estimateOptions := getEstimateOptions(1) // Default to story points
 
-	labelOptions := make([]huh.Option[string], len(labels))
-	labelMap := make(map[string]string)
-	for i, label := range labels {
-		labelOptions[i] = huh.Option[string]{Key: label.Name, Value: label.Name}
-		labelMap[label.Name] = label.ID
-	}
+	labelOptions, labelMap := labelOptions(labels)
 
 	userOptions := make([]huh.Option[string], len(users)+1) // +1 for "No assignee"
 	userOptions[0] = huh.Option[string]{Key: "No assignee", Value: ""}
@@ -814,13 +1204,13 @@ func main() {
 	}
 
 	fmt.Println("\n🚀 Creating ticket in Linear...")
-	issueId, err := createLinearTicket(apiKey, ticket, labelMap)
+	issue, err := createLinearTicket(apiKey, ticket, labelMap)
 	if err != nil {
 		fmt.Printf("❌ Error creating ticket: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Ticket created successfully! ID: %s\n", issueId)
+	fmt.Printf("✅ Ticket created successfully! ID: %s\n", issue.Identifier)
 
 	// Save user selections to cache
 	selections = UserSelections{
@@ -830,7 +1220,7 @@ func main() {
 		Estimate:   ticket.Estimate,
 		StatusId:   ticket.StatusId,
 	}
-	saveToCache("user-selections", selections)
+	saveUserSelections(selections)
 
 	// Post-creation menu
 	var action string
@@ -854,7 +1244,7 @@ func main() {
 
 	switch action {
 	case "branch":
-		branchName := strings.ToLower(issueId)
+		branchName := fallbackBranchName(issue)
 		if err := clipboard.WriteAll(branchName); err != nil {
 			fmt.Printf("❌ Failed to copy to clipboard: %v\n", err)
 		} else {
@@ -862,7 +1252,7 @@ func main() {
 		}
 	case "open":
 		// Get the full URL from the issue data
-		url := fmt.Sprintf("https://linear.app/issue/%s", issueId)
+		url := fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier)
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "windows":
@@ -882,7 +1272,7 @@ func main() {
 	}
 }
 
-func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]string) (string, error) {
+func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]string) (CreatedIssue, error) {
 	// GraphQL mutation to create an issue
 	mutation := `
 		mutation IssueCreate($input: IssueCreateInput!) {
@@ -891,6 +1281,7 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 				issue {
 					id
 					identifier
+					branchName
 					title
 					url
 				}
@@ -944,13 +1335,13 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return CreatedIssue{}, err
 	}
 
 	// Make the API request
 	req, err := http.NewRequest("POST", "https://api.linear.app/graphql", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", err
+		return CreatedIssue{}, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -959,18 +1350,18 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return CreatedIssue{}, err
 	}
 	defer resp.Body.Close()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return CreatedIssue{}, err
 	}
 
 	// Check for errors
 	if errors, ok := result["errors"].([]interface{}); ok && len(errors) > 0 {
-		return "", fmt.Errorf("Linear API error: %v", errors)
+		return CreatedIssue{}, fmt.Errorf("Linear API error: %v", errors)
 	}
 
 	// Extract issue ID
@@ -978,5 +1369,8 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	issueCreate := data["issueCreate"].(map[string]interface{})
 	issue := issueCreate["issue"].(map[string]interface{})
 
-	return issue["identifier"].(string), nil
+	return CreatedIssue{
+		Identifier: issue["identifier"].(string),
+		BranchName: getString(issue, "branchName"),
+	}, nil
 }
