@@ -67,9 +67,15 @@ source ~/.bashrc.local
 lnr
 ```
 
-### Fast usage:
+### Quick usage:
 
-Set the defaults used by fast commands:
+Configure the defaults used by quick commands:
+
+```bash
+lnr configure
+```
+
+Or set defaults individually:
 
 ```bash
 lnr set-team
@@ -80,8 +86,8 @@ lnr set-estimate
 Create an issue from only a title and print/copy Linear's branch name:
 
 ```bash
-lnr fast "Fix flaky deployment check"
-lnr --fast "Fix flaky deployment check"
+lnr quick "Fix flaky deployment check"
+lnr --quick "Fix flaky deployment check"
 ```
 
 Fuzzy find a recent issue in the default team and print/copy its branch name:
