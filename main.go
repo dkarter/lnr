@@ -36,9 +36,10 @@ type CreatedIssue struct {
 }
 
 type Issue struct {
-	Identifier string `json:"identifier"`
-	Title      string `json:"title"`
+	Identifier string `json:"issueId"`
 	BranchName string `json:"branchName"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
 }
 
 type UserSelections struct {
@@ -623,6 +624,7 @@ func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
 							identifier
 							title
 							branchName
+							url
 						}
 						pageInfo {
 							hasNextPage
@@ -655,6 +657,7 @@ func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
 				Identifier: issue["identifier"].(string),
 				Title:      issue["title"].(string),
 				BranchName: getString(issue, "branchName"),
+				URL:        issue["url"].(string),
 			})
 		}
 
@@ -980,7 +983,92 @@ func runConfigure(apiKey string) {
 	runSetStatus(apiKey)
 }
 
-func runIssueSearch(apiKey string) {
+func fallbackIssueBranchName(issue Issue) string {
+	if issue.BranchName != "" {
+		return issue.BranchName
+	}
+
+	return strings.ToLower(issue.Identifier)
+}
+
+func issueSearchScore(issue Issue, term string) int {
+	query := strings.ToLower(strings.TrimSpace(term))
+	if query == "" {
+		return 0
+	}
+
+	identifier := strings.ToLower(issue.Identifier)
+	title := strings.ToLower(issue.Title)
+	searchText := identifier + " " + title
+	if query == identifier {
+		return 1000
+	}
+	if strings.Contains(identifier, query) {
+		return 900 + len(query)
+	}
+	if strings.Contains(title, query) {
+		return 700 + len(query)
+	}
+	if strings.Contains(searchText, query) {
+		return 600 + len(query)
+	}
+
+	score := 0
+	queryIndex := 0
+	for _, r := range searchText {
+		if queryIndex >= len(query) {
+			break
+		}
+		if byte(r) == query[queryIndex] {
+			score++
+			queryIndex++
+		}
+	}
+	if queryIndex != len(query) {
+		return 0
+	}
+
+	return score
+}
+
+func findBestIssue(issues []Issue, term string) (Issue, bool) {
+	var bestIssue Issue
+	bestScore := 0
+	for _, issue := range issues {
+		score := issueSearchScore(issue, term)
+		if score > bestScore {
+			bestScore = score
+			bestIssue = issue
+		}
+	}
+
+	return bestIssue, bestScore > 0
+}
+
+func outputIssue(issue Issue, jsonOutput bool) {
+	branchName := fallbackIssueBranchName(issue)
+	issue.BranchName = branchName
+	if jsonOutput {
+		jsonData, err := json.Marshal(issue)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to encode JSON: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	if err := clipboard.WriteAll(branchName); err != nil {
+		fmt.Println(branchName)
+		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
+		return
+	}
+
+	fmt.Println(branchName)
+}
+
+func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
 	selections := loadUserSelections()
 	teamId := requireDefaultTeam(selections)
 
@@ -991,6 +1079,16 @@ func runIssueSearch(apiKey string) {
 	}
 	if len(issues) == 0 {
 		fmt.Println("No issues found for the default team")
+		return
+	}
+	if searchTerm != "" {
+		issue, found := findBestIssue(issues, searchTerm)
+		if !found {
+			fmt.Fprintf(os.Stderr, "No issue matched %q\n", searchTerm)
+			os.Exit(1)
+		}
+
+		outputIssue(issue, jsonOutput)
 		return
 	}
 
@@ -1020,18 +1118,7 @@ func runIssueSearch(apiKey string) {
 	}
 
 	issue := issueByKey[selectedIssueKey]
-	branchName := issue.BranchName
-	if branchName == "" {
-		branchName = strings.ToLower(issue.Identifier)
-	}
-
-	if err := clipboard.WriteAll(branchName); err != nil {
-		fmt.Println(branchName)
-		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
-		return
-	}
-
-	fmt.Println(branchName)
+	outputIssue(issue, jsonOutput)
 }
 
 func isHelpArg(arg string) bool {
@@ -1054,6 +1141,18 @@ func printQuickUsage() {
 	fmt.Println("  lnr [--json] --quick <title>")
 }
 
+func printIssueUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  lnr issue [--json] [search term]")
+	fmt.Println("  lnr [--json] issue [search term]")
+}
+
+func printCompletionUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  lnr completion bash")
+	fmt.Println("  lnr completion zsh")
+}
+
 func parseQuickArgs(args []string) (string, bool) {
 	var titleParts []string
 	jsonOutput := false
@@ -1069,21 +1168,125 @@ func parseQuickArgs(args []string) (string, bool) {
 	return strings.Join(titleParts, " "), jsonOutput
 }
 
+func parseIssueArgs(args []string) (string, bool) {
+	var searchParts []string
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			searchParts = append(searchParts, arg)
+		}
+	}
+
+	return strings.Join(searchParts, " "), jsonOutput
+}
+
+func printBashCompletion() {
+	fmt.Print(`_lnr_completion() {
+  local cur prev commands global_flags shells
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  commands="quick issue configure set-team set-labels set-estimate set-status completion reset help"
+  global_flags="--clear-cache --json --quick -h --help"
+  shells="bash zsh"
+
+  if [[ ${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${commands} ${global_flags}" -- "${cur}") )
+    return 0
+  fi
+
+  case "${COMP_WORDS[1]}" in
+    quick)
+      COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
+      return 0
+      ;;
+    issue)
+      COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
+      return 0
+      ;;
+    completion)
+      COMPREPLY=( $(compgen -W "${shells}" -- "${cur}") )
+      return 0
+      ;;
+  esac
+}
+
+complete -F _lnr_completion lnr
+`)
+}
+
+func printZshCompletion() {
+	fmt.Print(`#compdef lnr
+
+_lnr() {
+  local -a commands
+  commands=(
+    'quick:Create a Linear issue from a title'
+    'issue:Find an issue in the default team'
+    'configure:Configure default team, labels, estimate, and status'
+    'set-team:Set the default team'
+    'set-labels:Set default labels'
+    'set-estimate:Set the default estimate'
+    'set-status:Set the default status'
+    'completion:Generate shell completions'
+    'reset:Clear cached API data and saved defaults'
+    'help:Show help'
+  )
+
+  case $words[2] in
+    quick)
+      _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:title:'
+      ;;
+    issue)
+      _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:search term:'
+      ;;
+    completion)
+      _arguments '1:shell:(bash zsh)'
+      ;;
+    *)
+      _arguments '--clear-cache[Clear cached API data and saved defaults]' '--json[Output JSON]' '--quick[Create a Linear issue from a title]' '1:command:->commands'
+      if [[ $state == commands ]]; then
+        _describe 'commands' commands
+      fi
+      ;;
+  esac
+}
+
+_lnr "$@"
+`)
+}
+
+func runCompletion(shell string) {
+	switch shell {
+	case "bash":
+		printBashCompletion()
+	case "zsh":
+		printZshCompletion()
+	default:
+		printCompletionUsage()
+		os.Exit(1)
+	}
+}
+
 func main() {
 	// Parse command-line flags
 	clearCacheFlag := flag.Bool("clear-cache", false, "Clear cached API data and saved defaults")
 	quickTitleFlag := flag.String("quick", "", "Create a Linear issue from a title and print the branch name")
-	jsonOutputFlag := flag.Bool("json", false, "Output quick result as JSON")
+	jsonOutputFlag := flag.Bool("json", false, "Output supported command result as JSON")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick [--json] <title>\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue [--json] [search term]\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr configure\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-status\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr completion bash|zsh\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n\n")
 		flag.PrintDefaults()
 	}
@@ -1112,11 +1315,22 @@ func main() {
 				return
 			}
 			title, jsonOutput := parseQuickArgs(args[1:])
-			runQuickCreate(getAPIKey(), title, jsonOutput)
+			runQuickCreate(getAPIKey(), title, jsonOutput || *jsonOutputFlag)
 		case "issue":
-			runIssueSearch(getAPIKey())
+			if hasHelpArg(args[1:]) {
+				printIssueUsage()
+				return
+			}
+			searchTerm, jsonOutput := parseIssueArgs(args[1:])
+			runIssueSearch(getAPIKey(), searchTerm, jsonOutput || *jsonOutputFlag)
 		case "configure":
 			runConfigure(getAPIKey())
+		case "completion":
+			if len(args) < 2 || hasHelpArg(args[1:]) {
+				printCompletionUsage()
+				return
+			}
+			runCompletion(args[1])
 		case "set-team":
 			runSetTeam(getAPIKey())
 		case "set-labels":
