@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/dkarter/lnr/compare/v1.1.0...v1.2.0) (2026-06-30)
+
+
+### Features
+
+* add issue json search and completions ([0cb14b9](https://github.com/dkarter/lnr/commit/0cb14b9fadad5b42dfce7e58fd91a596ab2f38f7))
+* add quick json output ([b4a8949](https://github.com/dkarter/lnr/commit/b4a8949c79d3b6940f43697063ad13059944f16a))
+
+
+### Bug Fixes
+
+* handle quick command help ([de6e020](https://github.com/dkarter/lnr/commit/de6e02009a07a77a9a9cb98c3457f786bfcacb30))
+
 ## [1.1.0](https://github.com/dkarter/lnr/compare/v1.0.2...v1.1.0) (2026-06-30)
 
 
