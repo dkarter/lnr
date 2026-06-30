@@ -103,6 +103,26 @@ Fuzzy find a recent issue in the default team and print/copy its branch name:
 lnr issue
 ```
 
+Return JSON for the selected issue:
+
+```bash
+lnr issue --json
+```
+
+Search non-interactively and print/copy the best match:
+
+```bash
+lnr issue "deployment check"
+lnr issue --json "deployment check"
+```
+
+Generate shell completions:
+
+```bash
+lnr completion bash
+lnr completion zsh
+```
+
 Reset cached teams, labels, and defaults:
 
 ```bash
