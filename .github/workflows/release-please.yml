@@ -4,13 +4,30 @@ on:
   push:
     branches:
       - main
+  pull_request:
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+
+      - name: Run tests
+        run: go test ./...
+
   release-please:
+    if: ${{ github.event_name == 'push' }}
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
