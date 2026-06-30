@@ -67,6 +67,35 @@ source ~/.bashrc.local
 lnr
 ```
 
+### Fast usage:
+
+Set the defaults used by fast commands:
+
+```bash
+lnr set-team
+lnr set-labels
+lnr set-estimate
+```
+
+Create an issue from only a title and print/copy Linear's branch name:
+
+```bash
+lnr fast "Fix flaky deployment check"
+lnr --fast "Fix flaky deployment check"
+```
+
+Fuzzy find a recent issue in the default team and print/copy its branch name:
+
+```bash
+lnr issue
+```
+
+Reset cached teams, labels, and defaults:
+
+```bash
+lnr reset
+```
+
 ### tmux Integration
 
 For a better experience, add a shell function to your `~/.zshrc` or `~/.bashrc`:
