@@ -866,6 +866,59 @@ func runSetEstimate() {
 	fmt.Println("✅ Default estimate saved")
 }
 
+func runSetStatus(apiKey string) {
+	selections := loadUserSelections()
+	teamId := requireDefaultTeam(selections)
+
+	workflowStates, err := loadWorkflowStates(apiKey, teamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching workflow states: %v\n", err)
+		os.Exit(1)
+	}
+
+	statusOptions := make([]huh.Option[string], len(workflowStates)+1)
+	statusOptions[0] = huh.Option[string]{Key: "No default status", Value: ""}
+	for i, state := range workflowStates {
+		statusOptions[i+1] = huh.Option[string]{Key: state.Name, Value: state.ID}
+	}
+
+	selectedStatusId := selections.StatusId
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Default Status").
+				Description("Select the status to apply to new issues").
+				Options(statusOptions...).
+				Filtering(true).
+				Value(&selectedStatusId),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		fmt.Println("Status selection cancelled or error:", err)
+		os.Exit(1)
+	}
+
+	selections.StatusId = selectedStatusId
+	if err := saveUserSelections(selections); err != nil {
+		fmt.Printf("❌ Error saving default status: %v\n", err)
+		os.Exit(1)
+	}
+
+	if selectedStatusId == "" {
+		fmt.Println("✅ Default status cleared")
+		return
+	}
+
+	for _, state := range workflowStates {
+		if state.ID == selectedStatusId {
+			fmt.Printf("✅ Default status set to %s\n", state.Name)
+			return
+		}
+	}
+	fmt.Println("✅ Default status saved")
+}
+
 func runQuickCreate(apiKey, title string) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -906,10 +959,11 @@ func runQuickCreate(apiKey, title string) {
 }
 
 func runConfigure(apiKey string) {
-	fmt.Println("Configure default team, labels, and estimate")
+	fmt.Println("Configure default team, labels, estimate, and status")
 	runSetTeam(apiKey)
 	runSetLabels(apiKey)
 	runSetEstimate()
+	runSetStatus(apiKey)
 }
 
 func runIssueSearch(apiKey string) {
@@ -979,6 +1033,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-status\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n\n")
 		flag.PrintDefaults()
 	}
@@ -1013,6 +1068,8 @@ func main() {
 			runSetLabels(getAPIKey())
 		case "set-estimate":
 			runSetEstimate()
+		case "set-status":
+			runSetStatus(getAPIKey())
 		case "reset":
 			if err := resetData(); err != nil {
 				fmt.Printf("❌ Error clearing data: %v\n", err)
