@@ -1020,6 +1020,16 @@ func runIssueSearch(apiKey string) {
 	fmt.Println(branchName)
 }
 
+func isHelpArg(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
+}
+
+func printQuickUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  lnr quick <title>")
+	fmt.Println("  lnr --quick <title>")
+}
+
 func main() {
 	// Parse command-line flags
 	clearCacheFlag := flag.Bool("clear-cache", false, "Clear cached API data and saved defaults")
@@ -1057,6 +1067,10 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "quick":
+			if len(args) == 1 || isHelpArg(args[1]) {
+				printQuickUsage()
+				return
+			}
 			runQuickCreate(getAPIKey(), strings.Join(args[1:], " "))
 		case "issue":
 			runIssueSearch(getAPIKey())
