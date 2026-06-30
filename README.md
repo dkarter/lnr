@@ -91,6 +91,12 @@ lnr quick "Fix flaky deployment check"
 lnr --quick "Fix flaky deployment check"
 ```
 
+Return JSON instead of copying the branch name:
+
+```bash
+lnr quick --json "Fix flaky deployment check"
+```
+
 Fuzzy find a recent issue in the default team and print/copy its branch name:
 
 ```bash
