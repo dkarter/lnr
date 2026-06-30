@@ -81,6 +81,7 @@ Or set defaults individually:
 lnr set-team
 lnr set-labels
 lnr set-estimate
+lnr set-status
 ```
 
 Create an issue from only a title and print/copy Linear's branch name:
