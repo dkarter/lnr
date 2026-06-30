@@ -6,6 +6,10 @@ task = "mise run"
 description = "Build the binary"
 run = "go build -o lnr main.go"
 
+[tasks.test]
+description = "Run the full test suite"
+run = "go test ./..."
+
 [tasks.install]
 description = "Build and install the binary"
 run = """
