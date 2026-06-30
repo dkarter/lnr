@@ -29,8 +29,10 @@ type LinearTicket struct {
 }
 
 type CreatedIssue struct {
-	Identifier string
-	BranchName string
+	Identifier string `json:"issueId"`
+	BranchName string `json:"branchName"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
 }
 
 type Issue struct {
@@ -919,7 +921,7 @@ func runSetStatus(apiKey string) {
 	fmt.Println("✅ Default status saved")
 }
 
-func runQuickCreate(apiKey, title string) {
+func runQuickCreate(apiKey, title string, jsonOutput bool) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		fmt.Println("❌ Title cannot be empty")
@@ -949,6 +951,18 @@ func runQuickCreate(apiKey, title string) {
 	}
 
 	branchName := fallbackBranchName(issue)
+	issue.BranchName = branchName
+	if jsonOutput {
+		jsonData, err := json.Marshal(issue)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to encode JSON: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println(string(jsonData))
+		return
+	}
+
 	if err := clipboard.WriteAll(branchName); err != nil {
 		fmt.Println(branchName)
 		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
@@ -1024,20 +1038,46 @@ func isHelpArg(arg string) bool {
 	return arg == "help" || arg == "-h" || arg == "--help"
 }
 
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func printQuickUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  lnr quick <title>")
-	fmt.Println("  lnr --quick <title>")
+	fmt.Println("  lnr quick [--json] <title>")
+	fmt.Println("  lnr [--json] --quick <title>")
+}
+
+func parseQuickArgs(args []string) (string, bool) {
+	var titleParts []string
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			titleParts = append(titleParts, arg)
+		}
+	}
+
+	return strings.Join(titleParts, " "), jsonOutput
 }
 
 func main() {
 	// Parse command-line flags
 	clearCacheFlag := flag.Bool("clear-cache", false, "Clear cached API data and saved defaults")
 	quickTitleFlag := flag.String("quick", "", "Create a Linear issue from a title and print the branch name")
+	jsonOutputFlag := flag.Bool("json", false, "Output quick result as JSON")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick <title>\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick [--json] <title>\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr configure\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
@@ -1059,7 +1099,7 @@ func main() {
 		return
 	}
 	if *quickTitleFlag != "" {
-		runQuickCreate(getAPIKey(), *quickTitleFlag)
+		runQuickCreate(getAPIKey(), *quickTitleFlag, *jsonOutputFlag)
 		return
 	}
 
@@ -1067,11 +1107,12 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "quick":
-			if len(args) == 1 || isHelpArg(args[1]) {
+			if len(args) == 1 || hasHelpArg(args[1:]) {
 				printQuickUsage()
 				return
 			}
-			runQuickCreate(getAPIKey(), strings.Join(args[1:], " "))
+			title, jsonOutput := parseQuickArgs(args[1:])
+			runQuickCreate(getAPIKey(), title, jsonOutput)
 		case "issue":
 			runIssueSearch(getAPIKey())
 		case "configure":
@@ -1503,5 +1544,7 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	return CreatedIssue{
 		Identifier: issue["identifier"].(string),
 		BranchName: getString(issue, "branchName"),
+		Title:      issue["title"].(string),
+		URL:        issue["url"].(string),
 	}, nil
 }
