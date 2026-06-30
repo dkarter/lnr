@@ -76,10 +76,30 @@ type WorkflowState struct {
 
 const noCacheExpiration time.Duration = 0
 const userSelectionsCacheKey = "user-selections"
+const userSelectionsConfigFile = "defaults.json"
 
 func getCacheDir() string {
+	if xdgCacheHome := os.Getenv("XDG_CACHE_HOME"); xdgCacheHome != "" {
+		return filepath.Join(xdgCacheHome, "lnr")
+	}
+
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "lnr")
+}
+
+func getConfigDir() string {
+	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
+		return filepath.Join(xdgConfigHome, "lnr")
+	}
+
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "lnr")
+}
+
+func getConfigPath(filename string) string {
+	configDir := getConfigDir()
+	os.MkdirAll(configDir, 0755)
+	return filepath.Join(configDir, filename)
 }
 
 func getCachePath(key string) string {
@@ -149,6 +169,22 @@ func clearCache() error {
 	return os.RemoveAll(cacheDir)
 }
 
+func clearConfig() error {
+	configDir := getConfigDir()
+	if _, err := os.Stat(configDir); os.IsNotExist(err) {
+		return nil
+	}
+	return os.RemoveAll(configDir)
+}
+
+func resetData() error {
+	if err := clearCache(); err != nil {
+		return err
+	}
+
+	return clearConfig()
+}
+
 func getAPIKey() string {
 	apiKey := os.Getenv("LINEAR_API_KEY")
 	if apiKey == "" {
@@ -163,16 +199,30 @@ func getAPIKey() string {
 }
 
 func loadUserSelections() UserSelections {
-	selections, found := loadTypedFromCache[UserSelections](userSelectionsCacheKey, noCacheExpiration)
-	if !found {
-		return UserSelections{}
+	configPath := getConfigPath(userSelectionsConfigFile)
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		var selections UserSelections
+		if err := json.Unmarshal(data, &selections); err == nil {
+			return selections
+		}
 	}
 
-	return selections
+	if selections, found := loadTypedFromCache[UserSelections](userSelectionsCacheKey, noCacheExpiration); found {
+		_ = saveUserSelections(selections)
+		return selections
+	}
+
+	return UserSelections{}
 }
 
 func saveUserSelections(selections UserSelections) error {
-	return saveToCache(userSelectionsCacheKey, selections)
+	jsonData, err := json.MarshalIndent(selections, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(getConfigPath(userSelectionsConfigFile), jsonData, 0644)
 }
 
 func fallbackBranchName(issue CreatedIssue) string {
@@ -709,7 +759,7 @@ func runSetTeam(apiKey string) {
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Default Team").
-				Description("Filter and select the team to use for fast actions").
+				Description("Filter and select the team to use for quick actions").
 				Options(teamOptions(teams)...).
 				Filtering(true).
 				Value(&selectedTeamId),
@@ -756,7 +806,7 @@ func runSetLabels(apiKey string) {
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Default Labels").
-				Description("Filter and select labels to apply in fast mode").
+				Description("Filter and select labels to apply in quick mode").
 				Options(options...).
 				Filtering(true).
 				Value(&selectedLabels).
@@ -790,7 +840,7 @@ func runSetEstimate() {
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Default Estimate").
-				Description("Select the estimate to apply in fast mode").
+				Description("Select the estimate to apply in quick mode").
 				Options(estimateOptions...).
 				Value(&selectedEstimate),
 		),
@@ -816,7 +866,7 @@ func runSetEstimate() {
 	fmt.Println("✅ Default estimate saved")
 }
 
-func runFastCreate(apiKey, title string) {
+func runQuickCreate(apiKey, title string) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		fmt.Println("❌ Title cannot be empty")
@@ -853,6 +903,13 @@ func runFastCreate(apiKey, title string) {
 	}
 
 	fmt.Println(branchName)
+}
+
+func runConfigure(apiKey string) {
+	fmt.Println("Configure default team, labels, and estimate")
+	runSetTeam(apiKey)
+	runSetLabels(apiKey)
+	runSetEstimate()
 }
 
 func runIssueSearch(apiKey string) {
@@ -911,13 +968,14 @@ func runIssueSearch(apiKey string) {
 
 func main() {
 	// Parse command-line flags
-	clearCacheFlag := flag.Bool("clear-cache", false, "Clear the cache and refetch all data")
-	fastTitleFlag := flag.String("fast", "", "Create a Linear issue from a title and print the branch name")
+	clearCacheFlag := flag.Bool("clear-cache", false, "Clear cached API data and saved defaults")
+	quickTitleFlag := flag.String("quick", "", "Create a Linear issue from a title and print the branch name")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr fast <title>\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick <title>\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr configure\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
@@ -928,25 +986,27 @@ func main() {
 
 	// Handle clear cache flag
 	if *clearCacheFlag {
-		if err := clearCache(); err != nil {
-			fmt.Printf("❌ Error clearing cache: %v\n", err)
+		if err := resetData(); err != nil {
+			fmt.Printf("❌ Error clearing data: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("✅ Cache cleared successfully")
+		fmt.Println("✅ Data cleared successfully")
 		return
 	}
-	if *fastTitleFlag != "" {
-		runFastCreate(getAPIKey(), *fastTitleFlag)
+	if *quickTitleFlag != "" {
+		runQuickCreate(getAPIKey(), *quickTitleFlag)
 		return
 	}
 
 	args := flag.Args()
 	if len(args) > 0 {
 		switch args[0] {
-		case "fast":
-			runFastCreate(getAPIKey(), strings.Join(args[1:], " "))
+		case "quick":
+			runQuickCreate(getAPIKey(), strings.Join(args[1:], " "))
 		case "issue":
 			runIssueSearch(getAPIKey())
+		case "configure":
+			runConfigure(getAPIKey())
 		case "set-team":
 			runSetTeam(getAPIKey())
 		case "set-labels":
@@ -954,11 +1014,11 @@ func main() {
 		case "set-estimate":
 			runSetEstimate()
 		case "reset":
-			if err := clearCache(); err != nil {
-				fmt.Printf("❌ Error clearing cache: %v\n", err)
+			if err := resetData(); err != nil {
+				fmt.Printf("❌ Error clearing data: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println("✅ Cache cleared successfully")
+			fmt.Println("✅ Data cleared successfully")
 		case "help", "-h", "--help":
 			flag.Usage()
 		default:
