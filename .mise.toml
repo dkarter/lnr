@@ -1,3 +1,7 @@
+[shell_alias]
+lnr = "go run main.go"
+task = "mise run"
+
 [tasks.build]
 description = "Build the binary"
 run = "go build -o lnr main.go"
