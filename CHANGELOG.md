@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/dkarter/lnr/compare/v1.0.2...v1.1.0) (2026-06-30)
+
+
+### Features
+
+* add default status configuration ([573dca6](https://github.com/dkarter/lnr/commit/573dca65ea01c7f3ab93bdb2b0cc48da0cea93f2))
+* add fast Linear actions ([8aeb18d](https://github.com/dkarter/lnr/commit/8aeb18dd1abcc42ad8bf504c6158286cd91ae56f))
+* add quick configuration flow ([741b7f0](https://github.com/dkarter/lnr/commit/741b7f02f6f0722dd1675fa91610bd4a02eb5883))
+
 ## [1.0.2](https://github.com/dkarter/lnr/compare/v1.0.1...v1.0.2) (2026-05-08)
 
 
