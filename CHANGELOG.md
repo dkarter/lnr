@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/dkarter/lnr/compare/v1.2.0...v1.3.0) (2026-07-01)
+
+
+### Features
+
+* support OAuth using DCR protocol ([442d3aa](https://github.com/dkarter/lnr/commit/442d3aa26e3d732ee7bf407959386df47f49430d))
+
 ## [1.2.0](https://github.com/dkarter/lnr/compare/v1.1.0...v1.2.0) (2026-06-30)
 
 
