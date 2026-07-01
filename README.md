@@ -9,6 +9,7 @@ A beautiful TUI form for creating Linear tickets from the command line, perfect 
 - 🏷️ Label selection
 - 📝 Full description support
 - 🚀 Automatic ticket creation via Linear API
+- 🔐 Browser-based OAuth sign-in with Dynamic Client Registration
 - 💻 Perfect for tmux popups
 
 ## Installation
@@ -29,13 +30,41 @@ mise run install
 
 ## Configuration
 
-You'll need a Linear API key:
+By default, `lnr` signs in with Linear OAuth using Dynamic Client Registration. You do not need to create a Linear OAuth app manually.
+
+Start the OAuth flow explicitly:
+
+```bash
+lnr auth login
+```
+
+Or just run any command that needs Linear access. `lnr` will open your browser, ask you to approve access in Linear, and store the token at `~/.cache/lnr/oauth-token.json` with `0600` permissions.
+
+Clear the saved OAuth token:
+
+```bash
+lnr auth logout
+```
+
+You can customize OAuth scopes if needed:
+
+```bash
+export LINEAR_OAUTH_SCOPES='read write'
+```
+
+You can also bypass browser login with an existing OAuth access token:
+
+```bash
+export LINEAR_OAUTH_ACCESS_TOKEN='your-oauth-access-token'
+```
+
+Personal API keys are still supported and take precedence over OAuth:
 
 1. **Get your Linear API Key:**
    - Go to Linear Settings → API → Personal API keys
    - Create a new key
 
-2. **Set environment variables:**
+2. **Set the environment variable:**
 
 ```bash
 export LINEAR_API_KEY='lin_api_xxxxxxxxxxxxxxxxxx'

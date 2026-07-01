@@ -2,10 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,6 +87,70 @@ type WorkflowState struct {
 const noCacheExpiration time.Duration = 0
 const userSelectionsCacheKey = "user-selections"
 const userSelectionsConfigFile = "defaults.json"
+const mcpAuthHeaderPrefix = "mcp:"
+const oauthTokenCacheKey = "oauth-token"
+const oauthTokenRefreshSkew = time.Minute
+const defaultOAuthScopes = "read write"
+
+var linearOAuthAuthorizeURL = "https://mcp.linear.app/authorize"
+var linearOAuthRegistrationURL = "https://mcp.linear.app/register"
+var linearOAuthResource = "https://mcp.linear.app/mcp"
+var linearOAuthTokenURL = "https://mcp.linear.app/token"
+
+type OAuthTokenCache struct {
+	AccessToken  string    `json:"access_token"`
+	TokenType    string    `json:"token_type"`
+	RefreshToken string    `json:"refresh_token"`
+	Scope        string    `json:"scope"`
+	ClientID     string    `json:"client_id"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+type OAuthTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	TokenType        string `json:"token_type"`
+	ExpiresIn        int64  `json:"expires_in"`
+	Scope            string `json:"scope"`
+	RefreshToken     string `json:"refresh_token"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+type OAuthClientRegistrationResponse struct {
+	ClientID         string `json:"client_id"`
+	ClientSecret     string `json:"client_secret"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+type MCPResponse struct {
+	Result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"result"`
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type MCPPage[T any] struct {
+	Teams       []T    `json:"teams"`
+	Labels      []T    `json:"labels"`
+	Users       []T    `json:"users"`
+	Issues      []T    `json:"issues"`
+	HasNextPage bool   `json:"hasNextPage"`
+	Cursor      string `json:"cursor"`
+}
+
+type MCPIssue struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	URL           string `json:"url"`
+	GitBranchName string `json:"gitBranchName"`
+}
 
 func getCacheDir() string {
 	if xdgCacheHome := os.Getenv("XDG_CACHE_HOME"); xdgCacheHome != "" {
@@ -188,17 +259,697 @@ func resetData() error {
 	return clearConfig()
 }
 
-func getAPIKey() string {
+func getLinearAuthHeader() string {
 	apiKey := os.Getenv("LINEAR_API_KEY")
-	if apiKey == "" {
-		fmt.Println("❌ LINEAR_API_KEY environment variable not set")
-		fmt.Println("Set this to create tickets in Linear")
-		fmt.Println("\nExample:")
+	if apiKey != "" {
+		return apiKey
+	}
+
+	accessToken := os.Getenv("LINEAR_OAUTH_ACCESS_TOKEN")
+	if accessToken != "" {
+		return bearerAuthHeader(accessToken)
+	}
+
+	scopes := oauthScopes()
+
+	if cache, found := loadOAuthTokenCache(scopes); found {
+		if cache.ExpiresAt.After(time.Now().Add(oauthTokenRefreshSkew)) {
+			return mcpAuthHeader(cache.AccessToken)
+		}
+
+		if cache.RefreshToken != "" && cache.ClientID != "" {
+			token, err := refreshOAuthAccessToken(cache.ClientID, cache.RefreshToken, scopes)
+			if err == nil {
+				if err := saveOAuthToken(cache.ClientID, scopes, token, cache.RefreshToken); err == nil {
+					return mcpAuthHeader(token.AccessToken)
+				}
+			}
+			fmt.Println("Cached Linear OAuth token expired; starting a new browser login.")
+		}
+	}
+
+	token, err := runDCRLogin(scopes)
+	if err != nil {
+		fmt.Printf("❌ Error signing in to Linear: %v\n", err)
+		fmt.Println("\nYou can still use a personal API key instead:")
 		fmt.Println("  export LINEAR_API_KEY='your-api-key'")
 		os.Exit(1)
 	}
 
-	return apiKey
+	return mcpAuthHeader(token.AccessToken)
+}
+
+func oauthScopes() string {
+	scopes := os.Getenv("LINEAR_OAUTH_SCOPES")
+	if scopes == "" {
+		return defaultOAuthScopes
+	}
+
+	return scopes
+}
+
+func bearerAuthHeader(token string) string {
+	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		return token
+	}
+
+	return "Bearer " + token
+}
+
+func mcpAuthHeader(token string) string {
+	return mcpAuthHeaderPrefix + bearerAuthHeader(token)
+}
+
+func splitMCPAuthHeader(authHeader string) (string, bool) {
+	if !strings.HasPrefix(authHeader, mcpAuthHeaderPrefix) {
+		return authHeader, false
+	}
+
+	return strings.TrimPrefix(authHeader, mcpAuthHeaderPrefix), true
+}
+
+func loadOAuthTokenCache(scopes string) (OAuthTokenCache, bool) {
+	data, err := os.ReadFile(getCachePath(oauthTokenCacheKey))
+	if err != nil {
+		return OAuthTokenCache{}, false
+	}
+
+	var cache OAuthTokenCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return OAuthTokenCache{}, false
+	}
+
+	if cache.Scope != scopes || cache.AccessToken == "" {
+		return OAuthTokenCache{}, false
+	}
+
+	return cache, true
+}
+
+func saveOAuthToken(clientID, scopes string, token OAuthTokenResponse, fallbackRefreshToken string) error {
+	refreshToken := token.RefreshToken
+	if refreshToken == "" {
+		refreshToken = fallbackRefreshToken
+	}
+
+	expiresIn := token.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = int64((24 * time.Hour).Seconds())
+	}
+
+	return saveOAuthTokenCache(OAuthTokenCache{
+		AccessToken:  token.AccessToken,
+		TokenType:    token.TokenType,
+		RefreshToken: refreshToken,
+		Scope:        scopes,
+		ClientID:     clientID,
+		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second),
+	})
+}
+
+func saveOAuthTokenCache(cache OAuthTokenCache) error {
+	jsonData, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	cachePath := getCachePath(oauthTokenCacheKey)
+	if err := os.WriteFile(cachePath, jsonData, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(cachePath, 0600)
+}
+
+func clearOAuthTokenCache() error {
+	err := os.Remove(getCachePath(oauthTokenCacheKey))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+type oauthCallbackResult struct {
+	code string
+	err  error
+}
+
+func runDCRLogin(scopes string) (OAuthTokenResponse, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return OAuthTokenResponse{}, err
+	}
+
+	callbackURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
+	client, err := registerOAuthClient(callbackURL, scopes)
+	if err != nil {
+		listener.Close()
+		return OAuthTokenResponse{}, err
+	}
+
+	state, err := randomURLSafeString(32)
+	if err != nil {
+		listener.Close()
+		return OAuthTokenResponse{}, err
+	}
+	codeVerifier, err := randomURLSafeString(64)
+	if err != nil {
+		listener.Close()
+		return OAuthTokenResponse{}, err
+	}
+
+	resultCh := make(chan oauthCallbackResult, 1)
+	server := &http.Server{Handler: oauthCallbackHandler(state, resultCh)}
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			select {
+			case resultCh <- oauthCallbackResult{err: err}:
+			default:
+			}
+		}
+	}()
+
+	authURL, err := buildAuthorizationURL(client.ClientID, callbackURL, scopes, state, codeVerifier)
+	if err != nil {
+		shutdownOAuthServer(server)
+		return OAuthTokenResponse{}, err
+	}
+
+	fmt.Println("Opening Linear sign-in in your browser...")
+	fmt.Println(authURL)
+	if err := openURL(authURL); err != nil {
+		fmt.Printf("Could not open browser automatically: %v\n", err)
+		fmt.Println("Open the URL above to continue.")
+	}
+
+	var result oauthCallbackResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Minute):
+		shutdownOAuthServer(server)
+		return OAuthTokenResponse{}, fmt.Errorf("timed out waiting for OAuth callback")
+	}
+	shutdownOAuthServer(server)
+
+	if result.err != nil {
+		return OAuthTokenResponse{}, result.err
+	}
+
+	token, err := exchangeOAuthCode(client.ClientID, result.code, callbackURL, codeVerifier, scopes)
+	if err != nil {
+		return OAuthTokenResponse{}, err
+	}
+
+	if err := saveOAuthToken(client.ClientID, scopes, token, ""); err != nil {
+		return OAuthTokenResponse{}, err
+	}
+
+	return token, nil
+}
+
+func oauthCallbackHandler(expectedState string, resultCh chan<- oauthCallbackResult) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/callback" {
+			http.NotFound(w, r)
+			return
+		}
+
+		query := r.URL.Query()
+		if errorCode := query.Get("error"); errorCode != "" {
+			description := query.Get("error_description")
+			if description == "" {
+				description = errorCode
+			}
+			sendOAuthCallbackResult(resultCh, oauthCallbackResult{err: fmt.Errorf("OAuth authorization failed: %s", description)})
+			http.Error(w, "Linear authorization failed. You can close this tab.", http.StatusBadRequest)
+			return
+		}
+
+		if query.Get("state") != expectedState {
+			sendOAuthCallbackResult(resultCh, oauthCallbackResult{err: fmt.Errorf("OAuth state mismatch")})
+			http.Error(w, "OAuth state mismatch. You can close this tab.", http.StatusBadRequest)
+			return
+		}
+
+		code := query.Get("code")
+		if code == "" {
+			sendOAuthCallbackResult(resultCh, oauthCallbackResult{err: fmt.Errorf("OAuth callback did not include a code")})
+			http.Error(w, "OAuth callback did not include a code. You can close this tab.", http.StatusBadRequest)
+			return
+		}
+
+		sendOAuthCallbackResult(resultCh, oauthCallbackResult{code: code})
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, "<html><body><h1>Linear sign-in complete</h1><p>You can close this tab and return to lnr.</p></body></html>")
+	})
+}
+
+func sendOAuthCallbackResult(resultCh chan<- oauthCallbackResult, result oauthCallbackResult) {
+	select {
+	case resultCh <- result:
+	default:
+	}
+}
+
+func shutdownOAuthServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
+}
+
+func registerOAuthClient(callbackURL, scopes string) (OAuthClientRegistrationResponse, error) {
+	payload := map[string]interface{}{
+		"client_name":                "lnr",
+		"client_uri":                 "https://github.com/dkarter/lnr",
+		"redirect_uris":              []string{callbackURL},
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"scope":                      scopes,
+		"token_endpoint_auth_method": "none",
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return OAuthClientRegistrationResponse{}, err
+	}
+
+	req, err := http.NewRequest("POST", linearOAuthRegistrationURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return OAuthClientRegistrationResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return OAuthClientRegistrationResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OAuthClientRegistrationResponse{}, err
+	}
+
+	var client OAuthClientRegistrationResponse
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &client)
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return OAuthClientRegistrationResponse{}, oauthResponseError("OAuth client registration failed", body, client.Error, client.ErrorDescription)
+	}
+	if client.Error != "" {
+		return OAuthClientRegistrationResponse{}, oauthResponseError("OAuth client registration failed", body, client.Error, client.ErrorDescription)
+	}
+	if client.ClientID == "" {
+		return OAuthClientRegistrationResponse{}, fmt.Errorf("OAuth client registration response did not include client_id")
+	}
+
+	return client, nil
+}
+
+func buildAuthorizationURL(clientID, callbackURL, scopes, state, codeVerifier string) (string, error) {
+	authorizeURL, err := url.Parse(linearOAuthAuthorizeURL)
+	if err != nil {
+		return "", err
+	}
+
+	query := authorizeURL.Query()
+	query.Set("client_id", clientID)
+	query.Set("redirect_uri", callbackURL)
+	query.Set("response_type", "code")
+	query.Set("scope", scopes)
+	query.Set("state", state)
+	query.Set("code_challenge", codeChallenge(codeVerifier))
+	query.Set("code_challenge_method", "S256")
+	if linearOAuthResource != "" {
+		query.Set("resource", linearOAuthResource)
+	}
+	authorizeURL.RawQuery = query.Encode()
+
+	return authorizeURL.String(), nil
+}
+
+func exchangeOAuthCode(clientID, code, callbackURL, codeVerifier, scopes string) (OAuthTokenResponse, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", callbackURL)
+	form.Set("client_id", clientID)
+	form.Set("code_verifier", codeVerifier)
+	form.Set("scope", scopes)
+	if linearOAuthResource != "" {
+		form.Set("resource", linearOAuthResource)
+	}
+
+	return fetchOAuthAccessToken(form)
+}
+
+func refreshOAuthAccessToken(clientID, refreshToken, scopes string) (OAuthTokenResponse, error) {
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", clientID)
+	form.Set("scope", scopes)
+	if linearOAuthResource != "" {
+		form.Set("resource", linearOAuthResource)
+	}
+
+	return fetchOAuthAccessToken(form)
+}
+
+func fetchOAuthAccessToken(form url.Values) (OAuthTokenResponse, error) {
+	req, err := http.NewRequest("POST", linearOAuthTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return OAuthTokenResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return OAuthTokenResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OAuthTokenResponse{}, err
+	}
+
+	var token OAuthTokenResponse
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &token)
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return OAuthTokenResponse{}, oauthResponseError("OAuth token request failed", body, token.Error, token.ErrorDescription)
+	}
+	if token.Error != "" {
+		return OAuthTokenResponse{}, oauthResponseError("OAuth token request failed", body, token.Error, token.ErrorDescription)
+	}
+	if token.AccessToken == "" {
+		return OAuthTokenResponse{}, fmt.Errorf("OAuth token response did not include access_token")
+	}
+	if token.TokenType == "" {
+		token.TokenType = "Bearer"
+	}
+
+	return token, nil
+}
+
+func oauthResponseError(prefix string, body []byte, errorCode, description string) error {
+	if description != "" {
+		return fmt.Errorf("%s: %s", prefix, description)
+	}
+	if errorCode != "" {
+		return fmt.Errorf("%s: %s", prefix, errorCode)
+	}
+	return fmt.Errorf("%s: %s", prefix, strings.TrimSpace(string(body)))
+}
+
+func randomURLSafeString(byteCount int) (string, error) {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func codeChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func openURL(rawURL string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "linux":
+		cmd = exec.Command("xdg-open", rawURL)
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+
+	return cmd.Run()
+}
+
+func callMCPTool(authHeader, name string, arguments map[string]interface{}) ([]byte, error) {
+	requestBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name":      name,
+			"arguments": arguments,
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", linearOAuthResource, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", authHeader)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("Linear MCP error: %s", strings.TrimSpace(string(body)))
+	}
+
+	data, err := extractSSEData(body)
+	if err != nil {
+		return nil, err
+	}
+
+	var mcpResponse MCPResponse
+	if err := json.Unmarshal(data, &mcpResponse); err != nil {
+		return nil, err
+	}
+	if mcpResponse.Error != nil {
+		return nil, fmt.Errorf("Linear MCP error: %s", mcpResponse.Error.Message)
+	}
+
+	for _, content := range mcpResponse.Result.Content {
+		if content.Type == "text" && content.Text != "" {
+			return []byte(content.Text), nil
+		}
+	}
+
+	return nil, fmt.Errorf("Linear MCP response did not include text content")
+}
+
+func extractSSEData(body []byte) ([]byte, error) {
+	text := string(body)
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("empty Linear MCP response")
+	}
+
+	var dataLines []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+		}
+	}
+	if len(dataLines) == 0 {
+		return body, nil
+	}
+
+	return []byte(strings.Join(dataLines, "\n")), nil
+}
+
+func fetchMCPTeams(authHeader string) ([]Team, error) {
+	var teamList []Team
+	var cursor string
+	for {
+		arguments := map[string]interface{}{"limit": 250}
+		if cursor != "" {
+			arguments["cursor"] = cursor
+		}
+
+		data, err := callMCPTool(authHeader, "list_teams", arguments)
+		if err != nil {
+			return nil, err
+		}
+
+		var page MCPPage[Team]
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, err
+		}
+		teamList = append(teamList, page.Teams...)
+		if !page.HasNextPage || page.Cursor == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+
+	return teamList, nil
+}
+
+func fetchMCPTeamLabels(authHeader, teamID string) ([]Label, error) {
+	var labelList []Label
+	var cursor string
+	for {
+		arguments := map[string]interface{}{"team": teamID, "limit": 250}
+		if cursor != "" {
+			arguments["cursor"] = cursor
+		}
+
+		data, err := callMCPTool(authHeader, "list_issue_labels", arguments)
+		if err != nil {
+			return nil, err
+		}
+
+		var page MCPPage[Label]
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, err
+		}
+		labelList = append(labelList, page.Labels...)
+		if !page.HasNextPage || page.Cursor == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+
+	return labelList, nil
+}
+
+func fetchMCPTeamUsers(authHeader, teamID string) ([]User, error) {
+	var userList []User
+	var cursor string
+	for {
+		arguments := map[string]interface{}{"team": teamID, "limit": 250}
+		if cursor != "" {
+			arguments["cursor"] = cursor
+		}
+
+		data, err := callMCPTool(authHeader, "list_users", arguments)
+		if err != nil {
+			return nil, err
+		}
+
+		var page MCPPage[User]
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, err
+		}
+		userList = append(userList, page.Users...)
+		if !page.HasNextPage || page.Cursor == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+
+	return userList, nil
+}
+
+func fetchMCPWorkflowStates(authHeader, teamID string) ([]WorkflowState, error) {
+	data, err := callMCPTool(authHeader, "list_issue_statuses", map[string]interface{}{"team": teamID})
+	if err != nil {
+		return nil, err
+	}
+
+	var states []WorkflowState
+	if err := json.Unmarshal(data, &states); err != nil {
+		return nil, err
+	}
+
+	return states, nil
+}
+
+func fetchMCPTeamIssues(authHeader, teamID string) ([]Issue, error) {
+	var issueList []Issue
+	var cursor string
+	for {
+		arguments := map[string]interface{}{"team": teamID, "limit": 250}
+		if cursor != "" {
+			arguments["cursor"] = cursor
+		}
+
+		data, err := callMCPTool(authHeader, "list_issues", arguments)
+		if err != nil {
+			return nil, err
+		}
+
+		var page MCPPage[MCPIssue]
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, err
+		}
+		for _, issue := range page.Issues {
+			issueList = append(issueList, Issue{
+				Identifier: issue.ID,
+				BranchName: issue.GitBranchName,
+				Title:      issue.Title,
+				URL:        issue.URL,
+			})
+		}
+		if !page.HasNextPage || page.Cursor == "" {
+			break
+		}
+		cursor = page.Cursor
+	}
+
+	return issueList, nil
+}
+
+func createLinearTicketWithMCP(authHeader string, ticket LinearTicket) (CreatedIssue, error) {
+	arguments := map[string]interface{}{
+		"title": ticket.Title,
+		"team":  ticket.TeamId,
+	}
+	if ticket.Description != "" {
+		arguments["description"] = ticket.Description
+	}
+	if ticket.Estimate != "" && ticket.Estimate != "0" {
+		if estimate, err := strconv.Atoi(ticket.Estimate); err == nil {
+			arguments["estimate"] = estimate
+		}
+	}
+	if len(ticket.Labels) > 0 {
+		arguments["labels"] = ticket.Labels
+	}
+	if ticket.AssigneeId != "" {
+		arguments["assignee"] = ticket.AssigneeId
+	}
+	if ticket.StatusId != "" {
+		arguments["state"] = ticket.StatusId
+	}
+
+	data, err := callMCPTool(authHeader, "save_issue", arguments)
+	if err != nil {
+		return CreatedIssue{}, err
+	}
+
+	var issue MCPIssue
+	if err := json.Unmarshal(data, &issue); err != nil {
+		return CreatedIssue{}, err
+	}
+	if issue.ID == "" {
+		return CreatedIssue{}, fmt.Errorf("Linear MCP response did not include issue id")
+	}
+
+	return CreatedIssue{
+		Identifier: issue.ID,
+		BranchName: issue.GitBranchName,
+		Title:      issue.Title,
+		URL:        issue.URL,
+	}, nil
 }
 
 func loadUserSelections() UserSelections {
@@ -284,6 +1035,10 @@ func makeLinearRequest(apiKey, query string, variables map[string]interface{}) (
 }
 
 func fetchTeamLabels(apiKey, teamId string) ([]Label, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPTeamLabels(authHeader, teamId)
+	}
+
 	var labelList []Label
 	var after string
 
@@ -345,6 +1100,10 @@ func fetchTeamLabels(apiKey, teamId string) ([]Label, error) {
 }
 
 func fetchTeams(apiKey string) ([]Team, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPTeams(authHeader)
+	}
+
 	var teamList []Team
 	var after string
 
@@ -403,6 +1162,19 @@ func fetchTeams(apiKey string) ([]Team, error) {
 }
 
 func fetchTeamInfo(apiKey, teamId string) (*Team, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		teams, err := fetchMCPTeams(authHeader)
+		if err != nil {
+			return nil, err
+		}
+		for _, team := range teams {
+			if team.ID == teamId {
+				return &team, nil
+			}
+		}
+		return nil, fmt.Errorf("team not found: %s", teamId)
+	}
+
 	query := `
 		query Team($teamId: String!) {
 			team(id: $teamId) {
@@ -427,6 +1199,10 @@ func fetchTeamInfo(apiKey, teamId string) (*Team, error) {
 }
 
 func fetchTeamUsers(apiKey, teamId string) ([]User, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPTeamUsers(authHeader, teamId)
+	}
+
 	var userList []User
 	var after string
 
@@ -493,6 +1269,10 @@ func fetchTeamUsers(apiKey, teamId string) ([]User, error) {
 }
 
 func fetchWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPWorkflowStates(authHeader, teamId)
+	}
+
 	var stateList []WorkflowState
 	var after string
 
@@ -612,6 +1392,10 @@ func loadWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
 }
 
 func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPTeamIssues(authHeader, teamId)
+	}
+
 	var issues []Issue
 	var after string
 
@@ -1121,6 +1905,36 @@ func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
 	outputIssue(issue, jsonOutput)
 }
 
+func runAuth(args []string) {
+	if len(args) == 0 || hasHelpArg(args) {
+		printAuthUsage()
+		return
+	}
+
+	switch args[0] {
+	case "login":
+		if err := clearOAuthTokenCache(); err != nil {
+			fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := runDCRLogin(oauthScopes()); err != nil {
+			fmt.Printf("❌ Error signing in to Linear: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✅ Linear OAuth token saved")
+	case "logout":
+		if err := clearOAuthTokenCache(); err != nil {
+			fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("✅ Linear OAuth token cleared")
+	default:
+		fmt.Printf("Unknown auth command: %s\n\n", args[0])
+		printAuthUsage()
+		os.Exit(1)
+	}
+}
+
 func isHelpArg(arg string) bool {
 	return arg == "help" || arg == "-h" || arg == "--help"
 }
@@ -1151,6 +1965,12 @@ func printCompletionUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  lnr completion bash")
 	fmt.Println("  lnr completion zsh")
+}
+
+func printAuthUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  lnr auth login")
+	fmt.Println("  lnr auth logout")
 }
 
 func parseQuickArgs(args []string) (string, bool) {
@@ -1189,7 +2009,7 @@ func printBashCompletion() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="quick issue configure set-team set-labels set-estimate set-status completion reset help"
+  commands="quick issue auth configure set-team set-labels set-estimate set-status completion reset help"
   global_flags="--clear-cache --json --quick -h --help"
   shells="bash zsh"
 
@@ -1205,6 +2025,10 @@ func printBashCompletion() {
       ;;
     issue)
       COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
+      return 0
+      ;;
+    auth)
+      COMPREPLY=( $(compgen -W "login logout -h --help" -- "${cur}") )
       return 0
       ;;
     completion)
@@ -1226,6 +2050,7 @@ _lnr() {
   commands=(
     'quick:Create a Linear issue from a title'
     'issue:Find an issue in the default team'
+    'auth:Manage OAuth sign-in'
     'configure:Configure default team, labels, estimate, and status'
     'set-team:Set the default team'
     'set-labels:Set default labels'
@@ -1242,6 +2067,9 @@ _lnr() {
       ;;
     issue)
       _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:search term:'
+      ;;
+    auth)
+      _arguments '1:auth command:(login logout)' '-h[Show help]' '--help[Show help]'
       ;;
     completion)
       _arguments '1:shell:(bash zsh)'
@@ -1281,6 +2109,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick [--json] <title>\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue [--json] [search term]\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr auth login|logout\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr configure\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
@@ -1302,7 +2131,7 @@ func main() {
 		return
 	}
 	if *quickTitleFlag != "" {
-		runQuickCreate(getAPIKey(), *quickTitleFlag, *jsonOutputFlag)
+		runQuickCreate(getLinearAuthHeader(), *quickTitleFlag, *jsonOutputFlag)
 		return
 	}
 
@@ -1315,16 +2144,18 @@ func main() {
 				return
 			}
 			title, jsonOutput := parseQuickArgs(args[1:])
-			runQuickCreate(getAPIKey(), title, jsonOutput || *jsonOutputFlag)
+			runQuickCreate(getLinearAuthHeader(), title, jsonOutput || *jsonOutputFlag)
 		case "issue":
 			if hasHelpArg(args[1:]) {
 				printIssueUsage()
 				return
 			}
 			searchTerm, jsonOutput := parseIssueArgs(args[1:])
-			runIssueSearch(getAPIKey(), searchTerm, jsonOutput || *jsonOutputFlag)
+			runIssueSearch(getLinearAuthHeader(), searchTerm, jsonOutput || *jsonOutputFlag)
+		case "auth":
+			runAuth(args[1:])
 		case "configure":
-			runConfigure(getAPIKey())
+			runConfigure(getLinearAuthHeader())
 		case "completion":
 			if len(args) < 2 || hasHelpArg(args[1:]) {
 				printCompletionUsage()
@@ -1332,13 +2163,13 @@ func main() {
 			}
 			runCompletion(args[1])
 		case "set-team":
-			runSetTeam(getAPIKey())
+			runSetTeam(getLinearAuthHeader())
 		case "set-labels":
-			runSetLabels(getAPIKey())
+			runSetLabels(getLinearAuthHeader())
 		case "set-estimate":
 			runSetEstimate()
 		case "set-status":
-			runSetStatus(getAPIKey())
+			runSetStatus(getLinearAuthHeader())
 		case "reset":
 			if err := resetData(); err != nil {
 				fmt.Printf("❌ Error clearing data: %v\n", err)
@@ -1359,7 +2190,7 @@ func main() {
 	selections := loadUserSelections()
 
 	// Get API credentials
-	apiKey := getAPIKey()
+	apiKey := getLinearAuthHeader()
 
 	// Fetch teams
 	teams, err := loadTeams(apiKey)
@@ -1580,15 +2411,6 @@ func main() {
 	}
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// Create the ticket in Linear
-	if apiKey == "" {
-		fmt.Println("\n⚠️  LINEAR_API_KEY environment variable not set")
-		fmt.Println("Set this to automatically create tickets in Linear")
-		fmt.Println("\nExample:")
-		fmt.Println("  export LINEAR_API_KEY='your-api-key'")
-		return
-	}
-
 	fmt.Println("\n🚀 Creating ticket in Linear...")
 	issue, err := createLinearTicket(apiKey, ticket, labelMap)
 	if err != nil {
@@ -1659,6 +2481,10 @@ func main() {
 }
 
 func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]string) (CreatedIssue, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return createLinearTicketWithMCP(authHeader, ticket)
+	}
+
 	// GraphQL mutation to create an issue
 	mutation := `
 		mutation IssueCreate($input: IssueCreateInput!) {
