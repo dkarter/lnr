@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"flag"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,7 +26,6 @@ func TestCLIHelper(t *testing.T) {
 		}
 	}
 	os.Args = append([]string{"lnr"}, os.Args[separator+1:]...)
-	flag.CommandLine = flag.NewFlagSet("lnr", flag.ExitOnError)
 	main()
 }
 
@@ -39,45 +38,94 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 	return string(output), err
 }
 
-func TestExistingRootHelp(t *testing.T) {
-	output, err := runCLI(t, "help")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, expected := range []string{
-		"lnr quick [--json] <title>",
-		"lnr issue [--json] [search term]",
-		"lnr auth login|logout",
-		"lnr completion bash|zsh",
-		"lnr skill",
-	} {
-		if !strings.Contains(output, expected) {
-			t.Errorf("expected root help to contain %q, got:\n%s", expected, output)
-		}
+func stubCommandHandlers(executions *int) commandHandlers {
+	run := func() { (*executions)++ }
+	runWithAuth := func(string) { run() }
+	return commandHandlers{
+		authHeader: func() string {
+			run()
+			return "test-auth"
+		},
+		quick:       func(string, string, bool) { run() },
+		issue:       func(string, string, bool) { run() },
+		form:        run,
+		login:       run,
+		logout:      run,
+		configure:   runWithAuth,
+		setTeam:     runWithAuth,
+		setLabels:   runWithAuth,
+		setEstimate: run,
+		setStatus:   runWithAuth,
+		reset: func() error {
+			run()
+			return nil
+		},
+		skill: func(w io.Writer) {
+			run()
+			printSkill(w)
+		},
 	}
 }
 
-func TestExistingCommandHelp(t *testing.T) {
-	tests := []struct {
-		command string
-		usage   string
-	}{
-		{command: "quick", usage: "lnr quick [--json] <title>"},
-		{command: "issue", usage: "lnr issue [--json] [search term]"},
-		{command: "auth", usage: "lnr auth login"},
-		{command: "completion", usage: "lnr completion bash"},
-		{command: "skill", usage: "lnr skill"},
-	}
+func executeCommand(t *testing.T, handlers commandHandlers, args ...string) (string, error) {
+	t.Helper()
+	var output bytes.Buffer
+	cmd := newRootCommand(handlers)
+	cmd.SetArgs(args)
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	err := cmd.Execute()
+	return output.String(), err
+}
 
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			output, err := runCLI(t, tt.command, "--help")
+func TestRootHelp(t *testing.T) {
+	for _, args := range [][]string{nil, {"--help"}, {"help"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			executions := 0
+			output, err := executeCommand(t, stubCommandHandlers(&executions), args...)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(output, tt.usage) {
-				t.Fatalf("expected help to contain %q, got:\n%s", tt.usage, output)
+			for _, expected := range []string{
+				"lnr is a focused Linear CLI",
+				"Available Commands:",
+				"form",
+				"quick",
+				"issue",
+				"auth",
+				"--clear-cache",
+				"lnr quick --json",
+			} {
+				if !strings.Contains(output, expected) {
+					t.Errorf("expected root help to contain %q, got:\n%s", expected, output)
+				}
+			}
+			if executions != 0 {
+				t.Fatalf("expected root help not to execute handlers, got %d executions", executions)
+			}
+		})
+	}
+}
+
+func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
+	paths := [][]string{
+		{"form"}, {"quick"}, {"issue"}, {"auth"}, {"auth", "login"}, {"auth", "logout"},
+		{"configure"}, {"set-team"}, {"set-labels"}, {"set-estimate"}, {"set-status"},
+		{"completion"}, {"reset"}, {"skill"},
+	}
+	for _, path := range paths {
+		t.Run(strings.Join(path, "_"), func(t *testing.T) {
+			executions := 0
+			args := append(append([]string(nil), path...), "--help")
+			output, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output, "Usage:") {
+				t.Fatalf("expected command help, got:\n%s", output)
+			}
+			if executions != 0 {
+				t.Fatalf("expected help not to execute handlers, got %d executions", executions)
 			}
 		})
 	}
@@ -88,25 +136,150 @@ func TestUnknownCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unknown command to fail")
 	}
-	if !strings.Contains(output, "Unknown command: not-a-command") {
+	if !strings.Contains(output, `unknown command "not-a-command" for "lnr"`) {
 		t.Fatalf("expected unknown command error, got:\n%s", output)
-	}
-	if !strings.Contains(output, "lnr quick") {
-		t.Fatalf("expected root usage after unknown command, got:\n%s", output)
 	}
 }
 
-func TestCompletionsDiscoverCommands(t *testing.T) {
-	for _, shell := range []string{"bash", "zsh"} {
+func TestCompletionShells(t *testing.T) {
+	tests := map[string]string{
+		"bash":       "__start_lnr",
+		"zsh":        "#compdef lnr",
+		"fish":       "complete -c lnr",
+		"powershell": "Register-ArgumentCompleter -CommandName 'lnr'",
+	}
+	for shell, marker := range tests {
 		t.Run(shell, func(t *testing.T) {
-			output, err := runCLI(t, "completion", shell)
+			executions := 0
+			output, err := executeCommand(t, stubCommandHandlers(&executions), "completion", shell)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, command := range []string{"quick", "issue", "auth", "skill"} {
-				if !strings.Contains(output, command) {
-					t.Errorf("expected %s completion to contain %q", shell, command)
-				}
+			if !strings.Contains(output, marker) {
+				t.Errorf("expected %s completion to contain %q", shell, marker)
+			}
+			if executions != 0 {
+				t.Fatalf("completion unexpectedly executed a business handler")
+			}
+		})
+	}
+}
+
+func TestCommandArgumentValidationDoesNotExecute(t *testing.T) {
+	tests := [][]string{
+		{"quick"},
+		{"form", "extra"},
+		{"auth", "login", "extra"},
+		{"completion"},
+		{"completion", "unsupported"},
+		{"reset", "extra"},
+		{"skill", "extra"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			executions := 0
+			_, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err == nil {
+				t.Fatal("expected argument validation to fail")
+			}
+			if executions != 0 {
+				t.Fatalf("validation failure executed %d handlers", executions)
+			}
+		})
+	}
+}
+
+func TestSkillCommandOutput(t *testing.T) {
+	executions := 0
+	output, err := executeCommand(t, stubCommandHandlers(&executions), "skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != lnrSkill {
+		t.Fatal("expected skill command to print the embedded skill")
+	}
+	if executions != 1 {
+		t.Fatalf("expected only the skill handler to execute, got %d executions", executions)
+	}
+}
+
+func TestLegacyRootFlags(t *testing.T) {
+	t.Run("quick", func(t *testing.T) {
+		var auth, title string
+		var jsonOutput bool
+		handlers := stubCommandHandlers(new(int))
+		handlers.authHeader = func() string { return "legacy-auth" }
+		handlers.quick = func(gotAuth, gotTitle string, gotJSON bool) {
+			auth, title, jsonOutput = gotAuth, gotTitle, gotJSON
+		}
+
+		_, err := executeCommand(t, handlers, "--json", "--quick", "Fix the thing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "legacy-auth" || title != "Fix the thing" || !jsonOutput {
+			t.Fatalf("unexpected legacy quick values: auth=%q title=%q json=%v", auth, title, jsonOutput)
+		}
+	})
+
+	t.Run("json before subcommand", func(t *testing.T) {
+		var title string
+		var jsonOutput bool
+		handlers := stubCommandHandlers(new(int))
+		handlers.authHeader = func() string { return "legacy-auth" }
+		handlers.quick = func(_ string, gotTitle string, gotJSON bool) {
+			title, jsonOutput = gotTitle, gotJSON
+		}
+
+		_, err := executeCommand(t, handlers, "--json", "quick", "Fix", "the", "thing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if title != "Fix the thing" || !jsonOutput {
+			t.Fatalf("unexpected legacy subcommand values: title=%q json=%v", title, jsonOutput)
+		}
+	})
+
+	t.Run("clear cache", func(t *testing.T) {
+		resets := 0
+		handlers := stubCommandHandlers(new(int))
+		handlers.reset = func() error {
+			resets++
+			return nil
+		}
+		_, err := executeCommand(t, handlers, "--clear-cache")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resets != 1 {
+			t.Fatalf("expected one reset, got %d", resets)
+		}
+	})
+}
+
+func TestQuickAndIssueParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "quick", args: []string{"quick", "--json", "Fix", "the", "thing"}, want: "Fix the thing"},
+		{name: "issue", args: []string{"issue", "--json", "deployment", "check"}, want: "deployment check"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var text string
+			var jsonOutput bool
+			handlers := stubCommandHandlers(new(int))
+			handlers.authHeader = func() string { return "auth" }
+			handlers.quick = func(_ string, value string, json bool) { text, jsonOutput = value, json }
+			handlers.issue = func(_ string, value string, json bool) { text, jsonOutput = value, json }
+			_, err := executeCommand(t, handlers, tt.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if text != tt.want || !jsonOutput {
+				t.Fatalf("got text=%q json=%v", text, jsonOutput)
 			}
 		})
 	}
@@ -121,45 +294,6 @@ func TestPrintSkill(t *testing.T) {
 	}
 	if !bytes.Contains(output.Bytes(), []byte("name: lnr")) {
 		t.Fatal("expected embedded skill metadata")
-	}
-}
-
-func TestParseQuickArgs(t *testing.T) {
-	title, jsonOutput := parseQuickArgs([]string{"--json", "Fix", "the", "thing"})
-	if title != "Fix the thing" {
-		t.Fatalf("expected title %q, got %q", "Fix the thing", title)
-	}
-	if !jsonOutput {
-		t.Fatal("expected json output to be enabled")
-	}
-}
-
-func TestParseQuickArgsTreatsOnlyJSONAsFlag(t *testing.T) {
-	title, jsonOutput := parseQuickArgs([]string{"Fix", "--not-a-flag"})
-	if title != "Fix --not-a-flag" {
-		t.Fatalf("expected title %q, got %q", "Fix --not-a-flag", title)
-	}
-	if jsonOutput {
-		t.Fatal("expected json output to be disabled")
-	}
-}
-
-func TestParseIssueArgs(t *testing.T) {
-	searchTerm, jsonOutput := parseIssueArgs([]string{"--json", "deployment", "check"})
-	if searchTerm != "deployment check" {
-		t.Fatalf("expected search term %q, got %q", "deployment check", searchTerm)
-	}
-	if !jsonOutput {
-		t.Fatal("expected json output to be enabled")
-	}
-}
-
-func TestHasHelpArg(t *testing.T) {
-	if !hasHelpArg([]string{"--json", "--help"}) {
-		t.Fatal("expected help arg to be detected")
-	}
-	if hasHelpArg([]string{"--json", "Fix", "thing"}) {
-		t.Fatal("did not expect help arg to be detected")
 	}
 }
 
