@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/dkarter/lnr/compare/v1.4.0...v2.0.0) (2026-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* bare lnr now prints root help; use lnr form to launch the interactive issue form.
+
+### Code Refactoring
+
+* migrate CLI to Cobra ([#20](https://github.com/dkarter/lnr/issues/20)) ([5d47560](https://github.com/dkarter/lnr/commit/5d4756018cee3a7585eb38f5b44bcd770d2fd7e5))
+
 ## [1.4.0](https://github.com/dkarter/lnr/compare/v1.3.0...v1.4.0) (2026-07-24)
 
 
