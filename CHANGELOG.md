@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/dkarter/lnr/compare/v1.3.0...v1.4.0) (2026-07-24)
+
+
+### Features
+
+* expose agent skill ([acf53f5](https://github.com/dkarter/lnr/commit/acf53f52aecb4d8960e7ba5375c0b98101322c0e))
+
 ## [1.3.0](https://github.com/dkarter/lnr/compare/v1.2.0...v1.3.0) (2026-07-01)
 
 
