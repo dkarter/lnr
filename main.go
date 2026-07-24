@@ -98,6 +98,7 @@ const mcpAuthHeaderPrefix = "mcp:"
 const oauthTokenCacheKey = "oauth-token"
 const oauthTokenRefreshSkew = time.Minute
 const defaultOAuthScopes = "read write"
+const version = "2.0.0" // x-release-please-version
 
 var linearOAuthAuthorizeURL = "https://mcp.linear.app/authorize"
 var linearOAuthRegistrationURL = "https://mcp.linear.app/register"
@@ -2012,8 +2013,9 @@ func newRootCommand(handlers commandHandlers) *cobra.Command {
 	var quickTitle string
 
 	root := &cobra.Command{
-		Use:   "lnr",
-		Short: "Create and find Linear issues from the terminal",
+		Use:     "lnr",
+		Short:   "Create and find Linear issues from the terminal",
+		Version: version,
 		Long: `lnr is a focused Linear CLI for creating issues, finding existing work,
 and printing branch names for humans and coding agents.
 

@@ -110,6 +110,20 @@ func TestRootHelp(t *testing.T) {
 	}
 }
 
+func TestRootVersion(t *testing.T) {
+	executions := 0
+	output, err := executeCommand(t, stubCommandHandlers(&executions), "--version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "lnr version "+version+"\n" {
+		t.Fatalf("expected version output, got %q", output)
+	}
+	if executions != 0 {
+		t.Fatalf("expected version flag not to execute handlers, got %d executions", executions)
+	}
+}
+
 func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
 	paths := [][]string{
 		{"quick"}, {"issue"}, {"issue", "create"}, {"issue", "search"}, {"ic"}, {"is"},

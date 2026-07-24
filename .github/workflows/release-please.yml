@@ -35,9 +35,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
-        with:
-          # Use Go release type for semantic versioning
-          release-type: go
 
       # Build and upload binaries if a release was created
       - name: Checkout
