@@ -16,9 +16,10 @@ Authenticate through the browser if needed:
 lnr auth login
 ```
 
-Run `lnr configure` once to select the default team, labels, estimate, and
-status used by quick creation and issue search. The individual configuration
-commands are `set-team`, `set-labels`, `set-estimate`, and `set-status`.
+Run `lnr config` once to select the default team, labels, estimate, and status
+used by quick creation and issue search. The individual configuration commands
+are `config set-team`, `config set-labels`, `config set-estimate`, and
+`config set-status`.
 
 ## Create an Issue
 
@@ -28,25 +29,36 @@ Create from a title using saved defaults:
 lnr quick --json "Fix flaky deployment check"
 ```
 
-The JSON object contains `issueId`, `branchName`, `title`, and `url`. Use the
-interactive form by running `lnr` when a description, assignee, or per-issue
-choices are needed.
+Create non-interactively with a description and the same configured defaults:
+
+```bash
+lnr issue create --json --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
+```
+
+The JSON object contains `issueId`, `branchName`, `title`, and `url`. Without
+`--json`, creation prints and attempts to copy the Linear branch name. Run
+`lnr issue create` without creation flags for the interactive workflow. The
+shorter alias is `lnr ic`.
 
 ## Find an Issue
 
 Search recent issues in the default team and return the best match:
 
 ```bash
-lnr issue --json "deployment check"
+lnr issue search --json "deployment check"
 ```
 
-Run `lnr issue --json` without a search term for an interactive picker. The JSON
-shape matches quick creation.
+Run `lnr issue search --json` without a search term for an interactive picker.
+The shorter `lnr is` alias accepts the same arguments. The JSON shape matches
+quick creation.
 
 ## Operational Notes
 
 - Run `lnr COMMAND --help` before guessing command syntax.
 - Use `lnr reset` to clear cached API data and saved defaults.
+- `lnr auth login` and `lnr auth logout` clear cached data and defaults so
+  account-specific teams and settings cannot leak across Linear accounts.
 - `LINEAR_API_KEY` takes precedence over OAuth. `LINEAR_OAUTH_ACCESS_TOKEN` can
   provide an existing OAuth token; otherwise lnr uses browser login and caches
   its token securely.

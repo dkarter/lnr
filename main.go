@@ -8,7 +8,6 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/huh"
+	"github.com/spf13/cobra"
 )
 
 type LinearTicket struct {
@@ -48,6 +48,12 @@ type Issue struct {
 	BranchName string `json:"branchName"`
 	Title      string `json:"title"`
 	URL        string `json:"url"`
+}
+
+type IssueCreateOptions struct {
+	Title       string
+	Description string
+	JSON        bool
 }
 
 type UserSelections struct {
@@ -263,6 +269,10 @@ func resetData() error {
 	return clearConfig()
 }
 
+func clearAccountData() error {
+	return resetData()
+}
+
 func getLinearAuthHeader() string {
 	apiKey := os.Getenv("LINEAR_API_KEY")
 	if apiKey != "" {
@@ -292,6 +302,10 @@ func getLinearAuthHeader() string {
 		}
 	}
 
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
+		os.Exit(1)
+	}
 	token, err := runDCRLogin(scopes)
 	if err != nil {
 		fmt.Printf("❌ Error signing in to Linear: %v\n", err)
@@ -382,14 +396,6 @@ func saveOAuthTokenCache(cache OAuthTokenCache) error {
 		return err
 	}
 	return os.Chmod(cachePath, 0600)
-}
-
-func clearOAuthTokenCache() error {
-	err := os.Remove(getCachePath(oauthTokenCacheKey))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
 }
 
 type oauthCallbackResult struct {
@@ -1532,7 +1538,7 @@ func findTeam(teams []Team, teamId string) *Team {
 func requireDefaultTeam(selections UserSelections) string {
 	if selections.TeamId == "" {
 		fmt.Println("❌ No default team set")
-		fmt.Println("Run `lnr set-team` first")
+		fmt.Println("Run `lnr config set-team` first")
 		os.Exit(1)
 	}
 
@@ -1713,7 +1719,11 @@ func runSetStatus(apiKey string) {
 }
 
 func runQuickCreate(apiKey, title string, jsonOutput bool) {
-	title = strings.TrimSpace(title)
+	runIssueCreate(apiKey, IssueCreateOptions{Title: title, JSON: jsonOutput})
+}
+
+func runIssueCreate(apiKey string, options IssueCreateOptions) {
+	title := strings.TrimSpace(options.Title)
 	if title == "" {
 		fmt.Println("❌ Title cannot be empty")
 		os.Exit(1)
@@ -1729,18 +1739,23 @@ func runQuickCreate(apiKey, title string, jsonOutput bool) {
 	_, labelMap := labelOptions(labels)
 
 	issue, err := createLinearTicket(apiKey, LinearTicket{
-		Title:      title,
-		TeamId:     teamId,
-		Labels:     selections.Labels,
-		Estimate:   selections.Estimate,
-		AssigneeId: selections.AssigneeId,
-		StatusId:   selections.StatusId,
+		Title:       title,
+		Description: options.Description,
+		TeamId:      teamId,
+		Labels:      selections.Labels,
+		Estimate:    selections.Estimate,
+		AssigneeId:  selections.AssigneeId,
+		StatusId:    selections.StatusId,
 	}, labelMap)
 	if err != nil {
 		fmt.Printf("❌ Error creating ticket: %v\n", err)
 		os.Exit(1)
 	}
 
+	outputCreatedIssue(issue, options.JSON)
+}
+
+func outputCreatedIssue(issue CreatedIssue, jsonOutput bool) {
 	branchName := fallbackBranchName(issue)
 	issue.BranchName = branchName
 	if jsonOutput {
@@ -1909,311 +1924,388 @@ func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
 	outputIssue(issue, jsonOutput)
 }
 
-func runAuth(args []string) {
-	if len(args) == 0 || hasHelpArg(args) {
-		printAuthUsage()
-		return
-	}
-
-	switch args[0] {
-	case "login":
-		if err := clearOAuthTokenCache(); err != nil {
-			fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
-			os.Exit(1)
-		}
-		if _, err := runDCRLogin(oauthScopes()); err != nil {
-			fmt.Printf("❌ Error signing in to Linear: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✅ Linear OAuth token saved")
-	case "logout":
-		if err := clearOAuthTokenCache(); err != nil {
-			fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✅ Linear OAuth token cleared")
-	default:
-		fmt.Printf("Unknown auth command: %s\n\n", args[0])
-		printAuthUsage()
-		os.Exit(1)
-	}
-}
-
-func isHelpArg(arg string) bool {
-	return arg == "help" || arg == "-h" || arg == "--help"
-}
-
-func hasHelpArg(args []string) bool {
-	for _, arg := range args {
-		if isHelpArg(arg) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func printQuickUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  lnr quick [--json] <title>")
-	fmt.Println("  lnr [--json] --quick <title>")
-}
-
-func printIssueUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  lnr issue [--json] [search term]")
-	fmt.Println("  lnr [--json] issue [search term]")
-}
-
-func printCompletionUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  lnr completion bash")
-	fmt.Println("  lnr completion zsh")
-}
-
-func printAuthUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  lnr auth login")
-	fmt.Println("  lnr auth logout")
-}
-
 func printSkill(w io.Writer) {
 	fmt.Fprint(w, lnrSkill)
 }
 
-func printSkillUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  lnr skill")
-}
-
-func parseQuickArgs(args []string) (string, bool) {
-	var titleParts []string
-	jsonOutput := false
+func hasHelpArg(args []string) bool {
 	for _, arg := range args {
-		switch arg {
-		case "--json":
-			jsonOutput = true
-		default:
-			titleParts = append(titleParts, arg)
+		if arg == "help" || arg == "-h" || arg == "--help" {
+			return true
 		}
 	}
-
-	return strings.Join(titleParts, " "), jsonOutput
+	return false
 }
 
-func parseIssueArgs(args []string) (string, bool) {
-	var searchParts []string
+func parseLegacyArgs(args []string) (string, bool) {
+	var parts []string
 	jsonOutput := false
 	for _, arg := range args {
-		switch arg {
-		case "--json":
+		if arg == "--json" {
 			jsonOutput = true
-		default:
-			searchParts = append(searchParts, arg)
+		} else {
+			parts = append(parts, arg)
 		}
 	}
-
-	return strings.Join(searchParts, " "), jsonOutput
+	return strings.Join(parts, " "), jsonOutput
 }
 
-func printBashCompletion() {
-	fmt.Print(`_lnr_completion() {
-  local cur prev commands global_flags shells
-  COMPREPLY=()
-  cur="${COMP_WORDS[COMP_CWORD]}"
-  prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="quick issue auth configure set-team set-labels set-estimate set-status completion reset skill help"
-  global_flags="--clear-cache --json --quick -h --help"
-  shells="bash zsh"
-
-  if [[ ${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "${commands} ${global_flags}" -- "${cur}") )
-    return 0
-  fi
-
-  case "${COMP_WORDS[1]}" in
-    skill)
-      COMPREPLY=( $(compgen -W "-h --help" -- "${cur}") )
-      return 0
-      ;;
-    quick)
-      COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
-      return 0
-      ;;
-    issue)
-      COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
-      return 0
-      ;;
-    auth)
-      COMPREPLY=( $(compgen -W "login logout -h --help" -- "${cur}") )
-      return 0
-      ;;
-    completion)
-      COMPREPLY=( $(compgen -W "${shells}" -- "${cur}") )
-      return 0
-      ;;
-  esac
+type commandHandlers struct {
+	authHeader  func() string
+	quick       func(string, string, bool)
+	create      func(string, IssueCreateOptions)
+	issue       func(string, string, bool)
+	form        func()
+	login       func()
+	logout      func()
+	configure   func(string)
+	setTeam     func(string)
+	setLabels   func(string)
+	setEstimate func()
+	setStatus   func(string)
+	reset       func() error
+	skill       func(io.Writer)
 }
 
-complete -F _lnr_completion lnr
-`)
+func defaultCommandHandlers() commandHandlers {
+	return commandHandlers{
+		authHeader:  getLinearAuthHeader,
+		quick:       runQuickCreate,
+		create:      runIssueCreate,
+		issue:       runIssueSearch,
+		form:        runForm,
+		login:       runAuthLogin,
+		logout:      runAuthLogout,
+		configure:   runConfigure,
+		setTeam:     runSetTeam,
+		setLabels:   runSetLabels,
+		setEstimate: runSetEstimate,
+		setStatus:   runSetStatus,
+		reset:       resetData,
+		skill:       printSkill,
+	}
 }
 
-func printZshCompletion() {
-	fmt.Print(`#compdef lnr
-
-_lnr() {
-  local -a commands
-  commands=(
-    'skill:Print the lnr skill for AI agent discovery'
-    'quick:Create a Linear issue from a title'
-    'issue:Find an issue in the default team'
-    'auth:Manage OAuth sign-in'
-    'configure:Configure default team, labels, estimate, and status'
-    'set-team:Set the default team'
-    'set-labels:Set default labels'
-    'set-estimate:Set the default estimate'
-    'set-status:Set the default status'
-    'completion:Generate shell completions'
-    'reset:Clear cached API data and saved defaults'
-    'help:Show help'
-  )
-
-  case $words[2] in
-    skill)
-      _arguments '-h[Show help]' '--help[Show help]'
-      ;;
-    quick)
-      _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:title:'
-      ;;
-    issue)
-      _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:search term:'
-      ;;
-    auth)
-      _arguments '1:auth command:(login logout)' '-h[Show help]' '--help[Show help]'
-      ;;
-    completion)
-      _arguments '1:shell:(bash zsh)'
-      ;;
-    *)
-      _arguments '--clear-cache[Clear cached API data and saved defaults]' '--json[Output JSON]' '--quick[Create a Linear issue from a title]' '1:command:->commands'
-      if [[ $state == commands ]]; then
-        _describe 'commands' commands
-      fi
-      ;;
-  esac
+func runAuthLogin() {
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := runDCRLogin(oauthScopes()); err != nil {
+		fmt.Printf("❌ Error signing in to Linear: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ Linear OAuth token saved")
 }
 
-_lnr "$@"
-`)
+func runAuthLogout() {
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ Linear OAuth token and cached account data cleared")
 }
 
-func runCompletion(shell string) {
-	switch shell {
-	case "bash":
-		printBashCompletion()
-	case "zsh":
-		printZshCompletion()
-	default:
-		printCompletionUsage()
+func newRootCommand(handlers commandHandlers) *cobra.Command {
+	var clearCache bool
+	var rootJSON bool
+	var quickTitle string
+
+	root := &cobra.Command{
+		Use:   "lnr",
+		Short: "Create and find Linear issues from the terminal",
+		Long: `lnr is a focused Linear CLI for creating issues, finding existing work,
+and printing branch names for humans and coding agents.
+
+Use quick commands with saved defaults for automation, or create an issue
+interactively when it needs a description, assignee, or per-issue choices.`,
+		Example: `  # Create an issue non-interactively and return structured output
+  lnr quick --json "Fix flaky deployment check"
+
+  # Find an issue and print its Linear branch name
+  lnr issue search "deployment check"
+
+  # Create an issue with the full interactive workflow
+  lnr issue create`,
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case clearCache:
+				return runReset(cmd, handlers.reset)
+			case quickTitle != "":
+				handlers.quick(handlers.authHeader(), quickTitle, rootJSON)
+				return nil
+			default:
+				return cmd.Help()
+			}
+		},
+	}
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return err
+	})
+	root.Flags().BoolVar(&clearCache, "clear-cache", false, "Clear cached API data and saved defaults")
+	root.PersistentFlags().BoolVar(&rootJSON, "json", false, "Output supported command results as JSON")
+	root.Flags().StringVar(&quickTitle, "quick", "", "Create an issue from a title and print its branch name")
+
+	quickCmd := &cobra.Command{
+		Use:                "quick [flags] TITLE",
+		Short:              "Create an issue from a title using saved defaults",
+		Long:               "Create an issue from a title using saved defaults. Prints and copies the Linear branch name by default.",
+		DisableFlagParsing: true,
+		Example: `  lnr quick "Fix flaky deployment check"
+  lnr quick --json "Fix flaky deployment check"`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return nil
+			}
+			title, _ := parseLegacyArgs(args)
+			if title == "" {
+				return fmt.Errorf("requires a title")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return cmd.Help()
+			}
+			title, commandJSON := parseLegacyArgs(args)
+			handlers.quick(handlers.authHeader(), title, rootJSON || commandJSON)
+			return nil
+		},
+	}
+	quickCmd.Flags().Bool("json", false, "Output the created issue as JSON")
+
+	issueCmd := &cobra.Command{
+		Use:   "issue",
+		Short: "Work with Linear issues",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	issueCmd.AddCommand(newIssueSearchCommand(
+		"search [flags] [SEARCH]",
+		"Find an issue in the default team",
+		`  lnr issue search "deployment check"
+  lnr issue search --json "deployment check"
+  lnr issue search --json`,
+		&rootJSON,
+		handlers,
+	))
+	issueCmd.AddCommand(newIssueCreateCommand(
+		"create",
+		"Create a Linear issue",
+		&rootJSON,
+		handlers,
+	))
+	issueSearchAliasCmd := newIssueSearchCommand(
+		"is [flags] [SEARCH]",
+		`Search issues (alias for "lnr issue search")`,
+		`  lnr is "deployment check"
+  lnr is --json "deployment check"
+  lnr is --json`,
+		&rootJSON,
+		handlers,
+	)
+	issueCreateAliasCmd := newIssueCreateCommand(
+		"ic",
+		`Create an issue (alias for "lnr issue create")`,
+		&rootJSON,
+		handlers,
+	)
+
+	authCmd := &cobra.Command{
+		Use:   "auth",
+		Short: "Manage Linear authentication",
+	}
+	authCmd.AddCommand(
+		&cobra.Command{
+			Use:   "login",
+			Short: "Sign in to Linear through the browser",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handlers.login()
+			},
+		},
+		&cobra.Command{
+			Use:   "logout",
+			Short: "Clear the saved Linear OAuth token",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handlers.logout()
+			},
+		},
+	)
+
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Configure defaults for issue workflows",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			handlers.configure(handlers.authHeader())
+		},
+	}
+	configCmd.AddCommand(
+		noArgsCommand("set-team", "Set the default Linear team", func() {
+			handlers.setTeam(handlers.authHeader())
+		}),
+		noArgsCommand("set-labels", "Set the default issue labels", func() {
+			handlers.setLabels(handlers.authHeader())
+		}),
+		noArgsCommand("set-estimate", "Set the default issue estimate", handlers.setEstimate),
+		noArgsCommand("set-status", "Set the default issue status", func() {
+			handlers.setStatus(handlers.authHeader())
+		}),
+	)
+
+	root.AddCommand(
+		quickCmd,
+		issueCmd,
+		issueSearchAliasCmd,
+		issueCreateAliasCmd,
+		authCmd,
+		configCmd,
+		&cobra.Command{
+			Use:   "reset",
+			Short: "Clear cached API data and saved defaults",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runReset(cmd, handlers.reset)
+			},
+		},
+		&cobra.Command{
+			Use:   "skill",
+			Short: "Print the lnr skill for AI agent discovery",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				handlers.skill(cmd.OutOrStdout())
+			},
+		},
+		newCompletionCommand(),
+	)
+	root.AddCommand(
+		legacyConfigCommand("configure", func() { handlers.configure(handlers.authHeader()) }),
+		legacyConfigCommand("set-team", func() { handlers.setTeam(handlers.authHeader()) }),
+		legacyConfigCommand("set-labels", func() { handlers.setLabels(handlers.authHeader()) }),
+		legacyConfigCommand("set-estimate", handlers.setEstimate),
+		legacyConfigCommand("set-status", func() { handlers.setStatus(handlers.authHeader()) }),
+	)
+
+	return root
+}
+
+func newIssueCreateCommand(use, short string, rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	var options IssueCreateOptions
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Long: `Create a Linear issue using configured defaults for team, labels, estimate,
+status, and assignee. With no creation flags, opens the interactive workflow.
+Non-interactive creation prints and copies the Linear branch name by default.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nonInteractive := options.Title != "" || options.Description != "" || options.JSON || *rootJSON
+			if !nonInteractive {
+				handlers.form()
+				return nil
+			}
+			if strings.TrimSpace(options.Title) == "" {
+				return fmt.Errorf("--title is required for non-interactive creation")
+			}
+			options.JSON = options.JSON || *rootJSON
+			handlers.create(handlers.authHeader(), options)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&options.Title, "title", "", "Issue title for non-interactive creation")
+	cmd.Flags().StringVar(&options.Description, "description", "", "Issue description for non-interactive creation")
+	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the created issue as JSON")
+	return cmd
+}
+
+func newIssueSearchCommand(use, short, example string, rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                use,
+		Short:              short,
+		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker. Prints and copies the Linear branch name by default.",
+		Example:            example,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return cmd.Help()
+			}
+			searchTerm, commandJSON := parseLegacyArgs(args)
+			handlers.issue(handlers.authHeader(), searchTerm, *rootJSON || commandJSON)
+			return nil
+		},
+	}
+	cmd.Flags().Bool("json", false, "Output the selected issue as JSON")
+	return cmd
+}
+
+func runReset(cmd *cobra.Command, reset func() error) error {
+	if err := reset(); err != nil {
+		return fmt.Errorf("❌ Error clearing data: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "✅ Data cleared successfully")
+	return nil
+}
+
+func noArgsCommand(use, short string, run func()) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			run()
+		},
+	}
+}
+
+func legacyConfigCommand(use string, run func()) *cobra.Command {
+	cmd := noArgsCommand(use, "", run)
+	cmd.Hidden = true
+	replacement := "lnr config " + use
+	if use == "configure" {
+		replacement = "lnr config"
+	}
+	cmd.Deprecated = fmt.Sprintf("use %q instead", replacement)
+	return cmd
+}
+
+func newCompletionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                   "completion [bash|zsh|fish|powershell]",
+		Short:                 "Generate a shell completion script",
+		DisableFlagsInUseLine: true,
+		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return cmd.Root().GenBashCompletion(cmd.OutOrStdout())
+			case "zsh":
+				return cmd.Root().GenZshCompletion(cmd.OutOrStdout())
+			case "fish":
+				return cmd.Root().GenFishCompletion(cmd.OutOrStdout(), true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletionWithDesc(cmd.OutOrStdout())
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func main() {
+	if err := newRootCommand(defaultCommandHandlers()).Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func main() {
-	// Parse command-line flags
-	clearCacheFlag := flag.Bool("clear-cache", false, "Clear cached API data and saved defaults")
-	quickTitleFlag := flag.String("quick", "", "Create a Linear issue from a title and print the branch name")
-	jsonOutputFlag := flag.Bool("json", false, "Output supported command result as JSON")
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr quick [--json] <title>\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr issue [--json] [search term]\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr auth login|logout\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr configure\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-team\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-labels\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-status\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr completion bash|zsh\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr skill\n\n")
-		flag.PrintDefaults()
-	}
-	flag.Parse()
-
-	// Handle clear cache flag
-	if *clearCacheFlag {
-		if err := resetData(); err != nil {
-			fmt.Printf("❌ Error clearing data: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✅ Data cleared successfully")
-		return
-	}
-	if *quickTitleFlag != "" {
-		runQuickCreate(getLinearAuthHeader(), *quickTitleFlag, *jsonOutputFlag)
-		return
-	}
-
-	args := flag.Args()
-	if len(args) > 0 {
-		switch args[0] {
-		case "quick":
-			if len(args) == 1 || hasHelpArg(args[1:]) {
-				printQuickUsage()
-				return
-			}
-			title, jsonOutput := parseQuickArgs(args[1:])
-			runQuickCreate(getLinearAuthHeader(), title, jsonOutput || *jsonOutputFlag)
-		case "issue":
-			if hasHelpArg(args[1:]) {
-				printIssueUsage()
-				return
-			}
-			searchTerm, jsonOutput := parseIssueArgs(args[1:])
-			runIssueSearch(getLinearAuthHeader(), searchTerm, jsonOutput || *jsonOutputFlag)
-		case "auth":
-			runAuth(args[1:])
-		case "skill":
-			if hasHelpArg(args[1:]) {
-				printSkillUsage()
-				return
-			}
-			printSkill(os.Stdout)
-		case "configure":
-			runConfigure(getLinearAuthHeader())
-		case "completion":
-			if len(args) < 2 || hasHelpArg(args[1:]) {
-				printCompletionUsage()
-				return
-			}
-			runCompletion(args[1])
-		case "set-team":
-			runSetTeam(getLinearAuthHeader())
-		case "set-labels":
-			runSetLabels(getLinearAuthHeader())
-		case "set-estimate":
-			runSetEstimate()
-		case "set-status":
-			runSetStatus(getLinearAuthHeader())
-		case "reset":
-			if err := resetData(); err != nil {
-				fmt.Printf("❌ Error clearing data: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("✅ Data cleared successfully")
-		case "help", "-h", "--help":
-			flag.Usage()
-		default:
-			fmt.Printf("Unknown command: %s\n\n", args[0])
-			flag.Usage()
-			os.Exit(1)
-		}
-		return
-	}
-
+func runForm() {
 	var ticket LinearTicket
 	selections := loadUserSelections()
 

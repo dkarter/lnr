@@ -1,16 +1,19 @@
 # Linear Ticket Form
 
-A beautiful TUI form for creating Linear tickets from the command line, perfect for tmux popup panes.
+A beautiful TUI form for creating Linear tickets from the command line, perfect for Herdr or tmux popup panes.
 
 ## Features
 
-- ✨ Interactive form with text input, textarea, dropdown, and multi-select
+- 🏎️ Designed for speed and reducing friction
 - 🎯 Story point estimation
 - 🏷️ Label selection
 - 📝 Full description support
 - 🚀 Automatic ticket creation via Linear API
 - 🔐 Browser-based OAuth sign-in with Dynamic Client Registration
-- 💻 Perfect for tmux popups
+- ✨ Interactive form with text input, textarea, dropdown, and multi-select
+- 💻 Interactive TUI is Perfect for herdr/tmux popups
+- 🤖 Perfect for agents! tell your agent to install the skill from `lnr skill`
+- 🤏 Minimal output to reduce context usage
 
 ## Installation
 
@@ -32,6 +35,9 @@ mise run install
 
 By default, `lnr` signs in with Linear OAuth using Dynamic Client Registration. You do not need to create a Linear OAuth app manually.
 
+<details>
+<summary>Authentication and token setup</summary>
+
 Start the OAuth flow explicitly:
 
 ```bash
@@ -40,7 +46,7 @@ lnr auth login
 
 Or just run any command that needs Linear access. `lnr` will open your browser, ask you to approve access in Linear, and store the token at `~/.cache/lnr/oauth-token.json` with `0600` permissions.
 
-Clear the saved OAuth token:
+Clear the saved OAuth token, cached API data, and account-specific defaults:
 
 ```bash
 lnr auth logout
@@ -88,12 +94,31 @@ source ~/.bashrc.local
 > Important! Never commit your .local files since they may contain sensitive
 > information.
 
+</details>
+
 ## Usage
 
-### Basic usage:
+### Command help:
 
 ```bash
 lnr
+```
+
+Create an issue with the interactive workflow:
+
+```bash
+lnr issue create
+lnr ic # Short alias
+```
+
+Create non-interactively with configured defaults. This prints and copies the
+Linear branch name by default:
+
+```bash
+lnr issue create --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
+lnr ic --json --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
 ```
 
 ### Quick usage:
@@ -101,16 +126,16 @@ lnr
 Configure the defaults used by quick commands:
 
 ```bash
-lnr configure
+lnr config
 ```
 
 Or set defaults individually:
 
 ```bash
-lnr set-team
-lnr set-labels
-lnr set-estimate
-lnr set-status
+lnr config set-team
+lnr config set-labels
+lnr config set-estimate
+lnr config set-status
 ```
 
 Create an issue from only a title and print/copy Linear's branch name:
@@ -129,20 +154,23 @@ lnr quick --json "Fix flaky deployment check"
 Fuzzy find a recent issue in the default team and print/copy its branch name:
 
 ```bash
-lnr issue
+lnr issue search
 ```
 
 Return JSON for the selected issue:
 
 ```bash
-lnr issue --json
+lnr issue search --json
 ```
 
 Search non-interactively and print/copy the best match:
 
 ```bash
-lnr issue "deployment check"
-lnr issue --json "deployment check"
+lnr issue search "deployment check"
+lnr issue search --json "deployment check"
+
+# Short alias
+lnr is --json "deployment check"
 ```
 
 Generate shell completions:
@@ -150,6 +178,8 @@ Generate shell completions:
 ```bash
 lnr completion bash
 lnr completion zsh
+lnr completion fish
+lnr completion powershell
 ```
 
 Reset cached teams, labels, and defaults:
@@ -158,17 +188,38 @@ Reset cached teams, labels, and defaults:
 lnr reset
 ```
 
+### Herdr Integration
+
+Add a custom popup command to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+i"
+type = "popup"
+command = "lnr issue create"
+width = "80%"
+height = "80%"
+```
+
+Reload Herdr's configuration:
+
+```bash
+herdr server reload-config
+```
+
+Then press `prefix + i` to open the issue creation workflow in a popup.
+
 ### tmux Integration
 
 For a better experience, add a shell function to your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-# LNR form in tmux popup
-lnr() {
+# LNR issue creation in tmux popup
+lnr-create() {
   if [[ -n "$TMUX" ]]; then
-    tmux popup -w 80% -h 80% lnr
+    tmux popup -w 80% -h 80% 'lnr issue create'
   else
-    lnr
+    command lnr issue create
   fi
 }
 ```
@@ -176,7 +227,7 @@ lnr() {
 Add a keybinding to your `~/.tmux.conf`:
 
 ```tmux
-bind-key "i" display-popup -E -w 80% -h 80% lnr
+bind-key "i" display-popup -E -w 80% -h 80% 'lnr issue create'
 ```
 
 Then press `prefix + i` to open the form in a popup!
