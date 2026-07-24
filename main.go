@@ -98,7 +98,7 @@ const mcpAuthHeaderPrefix = "mcp:"
 const oauthTokenCacheKey = "oauth-token"
 const oauthTokenRefreshSkew = time.Minute
 const defaultOAuthScopes = "read write"
-const version = "2.0.0" // x-release-please-version
+const version = "2.1.0" // x-release-please-version
 
 var linearOAuthAuthorizeURL = "https://mcp.linear.app/authorize"
 var linearOAuthRegistrationURL = "https://mcp.linear.app/register"
