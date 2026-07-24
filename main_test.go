@@ -416,6 +416,31 @@ func TestIssueCreateNonInteractive(t *testing.T) {
 	}
 }
 
+func TestClearAccountDataRemovesCacheAndDefaults(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := saveToCache("teams", []Team{{ID: "old-team", Name: "Old"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveUserSelections(UserSelections{TeamId: "old-team"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveOAuthTokenCache(OAuthTokenCache{AccessToken: "old-token"}); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := getCacheDir()
+	configDir := getConfigDir()
+
+	if err := clearAccountData(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{cacheDir, configDir} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, got %v", path, err)
+		}
+	}
+}
+
 func TestRootJSONReachesNestedIssueCommands(t *testing.T) {
 	t.Run("search", func(t *testing.T) {
 		var jsonOutput bool

@@ -40,7 +40,7 @@ lnr auth login
 
 Or just run any command that needs Linear access. `lnr` will open your browser, ask you to approve access in Linear, and store the token at `~/.cache/lnr/oauth-token.json` with `0600` permissions.
 
-Clear the saved OAuth token:
+Clear the saved OAuth token, cached API data, and account-specific defaults:
 
 ```bash
 lnr auth logout

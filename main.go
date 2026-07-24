@@ -269,6 +269,10 @@ func resetData() error {
 	return clearConfig()
 }
 
+func clearAccountData() error {
+	return resetData()
+}
+
 func getLinearAuthHeader() string {
 	apiKey := os.Getenv("LINEAR_API_KEY")
 	if apiKey != "" {
@@ -298,6 +302,10 @@ func getLinearAuthHeader() string {
 		}
 	}
 
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
+		os.Exit(1)
+	}
 	token, err := runDCRLogin(scopes)
 	if err != nil {
 		fmt.Printf("❌ Error signing in to Linear: %v\n", err)
@@ -388,14 +396,6 @@ func saveOAuthTokenCache(cache OAuthTokenCache) error {
 		return err
 	}
 	return os.Chmod(cachePath, 0600)
-}
-
-func clearOAuthTokenCache() error {
-	err := os.Remove(getCachePath(oauthTokenCacheKey))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
 }
 
 type oauthCallbackResult struct {
@@ -1987,8 +1987,8 @@ func defaultCommandHandlers() commandHandlers {
 }
 
 func runAuthLogin() {
-	if err := clearOAuthTokenCache(); err != nil {
-		fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
 		os.Exit(1)
 	}
 	if _, err := runDCRLogin(oauthScopes()); err != nil {
@@ -1999,11 +1999,11 @@ func runAuthLogin() {
 }
 
 func runAuthLogout() {
-	if err := clearOAuthTokenCache(); err != nil {
-		fmt.Printf("❌ Error clearing saved OAuth token: %v\n", err)
+	if err := clearAccountData(); err != nil {
+		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✅ Linear OAuth token cleared")
+	fmt.Println("✅ Linear OAuth token and cached account data cleared")
 }
 
 func newRootCommand(handlers commandHandlers) *cobra.Command {

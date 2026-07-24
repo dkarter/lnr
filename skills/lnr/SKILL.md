@@ -57,6 +57,8 @@ quick creation.
 
 - Run `lnr COMMAND --help` before guessing command syntax.
 - Use `lnr reset` to clear cached API data and saved defaults.
+- `lnr auth login` and `lnr auth logout` clear cached data and defaults so
+  account-specific teams and settings cannot leak across Linear accounts.
 - `LINEAR_API_KEY` takes precedence over OAuth. `LINEAR_OAUTH_ACCESS_TOKEN` can
   provide an existing OAuth token; otherwise lnr uses browser login and caches
   its token securely.
