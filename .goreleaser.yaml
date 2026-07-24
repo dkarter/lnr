@@ -78,6 +78,10 @@ changelog:
 source:
   enabled: true
 
+release:
+  draft: true
+  use_existing_draft: true
+
 # Announce the release
 announce:
   skip: '{{ if ne (len .Changelog) 0 }}false{{ else }}true{{ end }}'
