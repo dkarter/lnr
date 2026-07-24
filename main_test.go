@@ -2,13 +2,115 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestCLIHelper(t *testing.T) {
+	if os.Getenv("LNR_TEST_HELPER") != "1" {
+		return
+	}
+
+	separator := 0
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	os.Args = append([]string{"lnr"}, os.Args[separator+1:]...)
+	flag.CommandLine = flag.NewFlagSet("lnr", flag.ExitOnError)
+	main()
+}
+
+func runCLI(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	commandArgs := append([]string{"-test.run=^TestCLIHelper$", "--"}, args...)
+	cmd := exec.Command(os.Args[0], commandArgs...)
+	cmd.Env = append(os.Environ(), "LNR_TEST_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func TestExistingRootHelp(t *testing.T) {
+	output, err := runCLI(t, "help")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, expected := range []string{
+		"lnr quick [--json] <title>",
+		"lnr issue [--json] [search term]",
+		"lnr auth login|logout",
+		"lnr completion bash|zsh",
+		"lnr skill",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("expected root help to contain %q, got:\n%s", expected, output)
+		}
+	}
+}
+
+func TestExistingCommandHelp(t *testing.T) {
+	tests := []struct {
+		command string
+		usage   string
+	}{
+		{command: "quick", usage: "lnr quick [--json] <title>"},
+		{command: "issue", usage: "lnr issue [--json] [search term]"},
+		{command: "auth", usage: "lnr auth login"},
+		{command: "completion", usage: "lnr completion bash"},
+		{command: "skill", usage: "lnr skill"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			output, err := runCLI(t, tt.command, "--help")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output, tt.usage) {
+				t.Fatalf("expected help to contain %q, got:\n%s", tt.usage, output)
+			}
+		})
+	}
+}
+
+func TestUnknownCommand(t *testing.T) {
+	output, err := runCLI(t, "not-a-command")
+	if err == nil {
+		t.Fatal("expected unknown command to fail")
+	}
+	if !strings.Contains(output, "Unknown command: not-a-command") {
+		t.Fatalf("expected unknown command error, got:\n%s", output)
+	}
+	if !strings.Contains(output, "lnr quick") {
+		t.Fatalf("expected root usage after unknown command, got:\n%s", output)
+	}
+}
+
+func TestCompletionsDiscoverCommands(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh"} {
+		t.Run(shell, func(t *testing.T) {
+			output, err := runCLI(t, "completion", shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, command := range []string{"quick", "issue", "auth", "skill"} {
+				if !strings.Contains(output, command) {
+					t.Errorf("expected %s completion to contain %q", shell, command)
+				}
+			}
+		})
+	}
+}
 
 func TestPrintSkill(t *testing.T) {
 	var output bytes.Buffer
