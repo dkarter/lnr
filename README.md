@@ -1,16 +1,19 @@
 # Linear Ticket Form
 
-A beautiful TUI form for creating Linear tickets from the command line, perfect for tmux popup panes.
+A beautiful TUI form for creating Linear tickets from the command line, perfect for Herdr or tmux popup panes.
 
 ## Features
 
-- ✨ Interactive form with text input, textarea, dropdown, and multi-select
+- 🏎️ Designed for speed and reducing friction
 - 🎯 Story point estimation
 - 🏷️ Label selection
 - 📝 Full description support
 - 🚀 Automatic ticket creation via Linear API
 - 🔐 Browser-based OAuth sign-in with Dynamic Client Registration
-- 💻 Perfect for tmux popups
+- ✨ Interactive form with text input, textarea, dropdown, and multi-select
+- 💻 Interactive TUI is Perfect for herdr/tmux popups
+- 🤖 Perfect for agents! tell your agent to install the skill from `lnr skill`
+- 🤏 Minimal output to reduce context usage
 
 ## Installation
 
@@ -31,6 +34,9 @@ mise run install
 ## Configuration
 
 By default, `lnr` signs in with Linear OAuth using Dynamic Client Registration. You do not need to create a Linear OAuth app manually.
+
+<details>
+<summary>Authentication and token setup</summary>
 
 Start the OAuth flow explicitly:
 
@@ -87,6 +93,8 @@ source ~/.bashrc.local
 > [!WARNING]
 > Important! Never commit your .local files since they may contain sensitive
 > information.
+
+</details>
 
 ## Usage
 
@@ -179,6 +187,27 @@ Reset cached teams, labels, and defaults:
 ```bash
 lnr reset
 ```
+
+### Herdr Integration
+
+Add a custom popup command to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+i"
+type = "popup"
+command = "lnr issue create"
+width = "80%"
+height = "80%"
+```
+
+Reload Herdr's configuration:
+
+```bash
+herdr server reload-config
+```
+
+Then press `prefix + i` to open the issue creation workflow in a popup.
 
 ### tmux Integration
 
