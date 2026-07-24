@@ -118,16 +118,16 @@ lnr ic --json --title "Fix flaky deployment check" \
 Configure the defaults used by quick commands:
 
 ```bash
-lnr configure
+lnr config
 ```
 
 Or set defaults individually:
 
 ```bash
-lnr set-team
-lnr set-labels
-lnr set-estimate
-lnr set-status
+lnr config set-team
+lnr config set-labels
+lnr config set-estimate
+lnr config set-status
 ```
 
 Create an issue from only a title and print/copy Linear's branch name:

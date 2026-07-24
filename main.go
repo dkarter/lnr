@@ -1538,7 +1538,7 @@ func findTeam(teams []Team, teamId string) *Team {
 func requireDefaultTeam(selections UserSelections) string {
 	if selections.TeamId == "" {
 		fmt.Println("❌ No default team set")
-		fmt.Println("Run `lnr set-team` first")
+		fmt.Println("Run `lnr config set-team` first")
 		os.Exit(1)
 	}
 
@@ -2138,15 +2138,15 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 		},
 	)
 
-	root.AddCommand(
-		quickCmd,
-		issueCmd,
-		issueSearchAliasCmd,
-		issueCreateAliasCmd,
-		authCmd,
-		noArgsCommand("configure", "Configure defaults for quick issue creation", func() {
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Configure defaults for issue workflows",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
 			handlers.configure(handlers.authHeader())
-		}),
+		},
+	}
+	configCmd.AddCommand(
 		noArgsCommand("set-team", "Set the default Linear team", func() {
 			handlers.setTeam(handlers.authHeader())
 		}),
@@ -2157,6 +2157,15 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 		noArgsCommand("set-status", "Set the default issue status", func() {
 			handlers.setStatus(handlers.authHeader())
 		}),
+	)
+
+	root.AddCommand(
+		quickCmd,
+		issueCmd,
+		issueSearchAliasCmd,
+		issueCreateAliasCmd,
+		authCmd,
+		configCmd,
 		&cobra.Command{
 			Use:   "reset",
 			Short: "Clear cached API data and saved defaults",
@@ -2174,6 +2183,13 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 			},
 		},
 		newCompletionCommand(),
+	)
+	root.AddCommand(
+		legacyConfigCommand("configure", func() { handlers.configure(handlers.authHeader()) }),
+		legacyConfigCommand("set-team", func() { handlers.setTeam(handlers.authHeader()) }),
+		legacyConfigCommand("set-labels", func() { handlers.setLabels(handlers.authHeader()) }),
+		legacyConfigCommand("set-estimate", handlers.setEstimate),
+		legacyConfigCommand("set-status", func() { handlers.setStatus(handlers.authHeader()) }),
 	)
 
 	return root
@@ -2245,6 +2261,17 @@ func noArgsCommand(use, short string, run func()) *cobra.Command {
 			run()
 		},
 	}
+}
+
+func legacyConfigCommand(use string, run func()) *cobra.Command {
+	cmd := noArgsCommand(use, "", run)
+	cmd.Hidden = true
+	replacement := "lnr config " + use
+	if use == "configure" {
+		replacement = "lnr config"
+	}
+	cmd.Deprecated = fmt.Sprintf("use %q instead", replacement)
+	return cmd
 }
 
 func newCompletionCommand() *cobra.Command {

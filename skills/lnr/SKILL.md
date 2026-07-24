@@ -16,9 +16,10 @@ Authenticate through the browser if needed:
 lnr auth login
 ```
 
-Run `lnr configure` once to select the default team, labels, estimate, and
-status used by quick creation and issue search. The individual configuration
-commands are `set-team`, `set-labels`, `set-estimate`, and `set-status`.
+Run `lnr config` once to select the default team, labels, estimate, and status
+used by quick creation and issue search. The individual configuration commands
+are `config set-team`, `config set-labels`, `config set-estimate`, and
+`config set-status`.
 
 ## Create an Issue
 

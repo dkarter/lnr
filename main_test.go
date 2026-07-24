@@ -90,6 +90,7 @@ func TestRootHelp(t *testing.T) {
 			for _, expected := range []string{
 				"lnr is a focused Linear CLI",
 				"Available Commands:",
+				"config",
 				"quick",
 				"issue",
 				"is",
@@ -113,6 +114,8 @@ func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
 	paths := [][]string{
 		{"quick"}, {"issue"}, {"issue", "create"}, {"issue", "search"}, {"ic"}, {"is"},
 		{"auth"}, {"auth", "login"}, {"auth", "logout"},
+		{"config"}, {"config", "set-team"}, {"config", "set-labels"},
+		{"config", "set-estimate"}, {"config", "set-status"},
 		{"configure"}, {"set-team"}, {"set-labels"}, {"set-estimate"}, {"set-status"},
 		{"completion"}, {"reset"}, {"skill"},
 	}
@@ -201,6 +204,7 @@ func TestCommandArgumentValidationDoesNotExecute(t *testing.T) {
 		{"issue", "create", "--description", "Missing title"},
 		{"ic", "extra"},
 		{"issue", "deployment"},
+		{"config", "set-team", "extra"},
 		{"auth", "login", "extra"},
 		{"completion"},
 		{"completion", "unsupported"},
@@ -345,6 +349,43 @@ func TestIssueCreatePaths(t *testing.T) {
 			}
 			if executions != 1 {
 				t.Fatalf("expected only issue creation to execute, got %d handlers", executions)
+			}
+		})
+	}
+}
+
+func TestConfigCommandPaths(t *testing.T) {
+	tests := [][]string{
+		{"config"},
+		{"config", "set-team"},
+		{"config", "set-labels"},
+		{"config", "set-estimate"},
+		{"config", "set-status"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			executions := 0
+			_, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if executions == 0 {
+				t.Fatal("expected config handler to execute")
+			}
+		})
+	}
+}
+
+func TestLegacyConfigCommandsStillExecute(t *testing.T) {
+	for _, args := range [][]string{{"configure"}, {"set-team"}, {"set-labels"}, {"set-estimate"}, {"set-status"}} {
+		t.Run(args[0], func(t *testing.T) {
+			executions := 0
+			_, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if executions == 0 {
+				t.Fatal("expected deprecated config command to execute")
 			}
 		})
 	}
