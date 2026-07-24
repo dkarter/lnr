@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -96,6 +97,9 @@ var linearOAuthAuthorizeURL = "https://mcp.linear.app/authorize"
 var linearOAuthRegistrationURL = "https://mcp.linear.app/register"
 var linearOAuthResource = "https://mcp.linear.app/mcp"
 var linearOAuthTokenURL = "https://mcp.linear.app/token"
+
+//go:embed skills/lnr/SKILL.md
+var lnrSkill string
 
 type OAuthTokenCache struct {
 	AccessToken  string    `json:"access_token"`
@@ -1973,6 +1977,15 @@ func printAuthUsage() {
 	fmt.Println("  lnr auth logout")
 }
 
+func printSkill(w io.Writer) {
+	fmt.Fprint(w, lnrSkill)
+}
+
+func printSkillUsage() {
+	fmt.Println("Usage:")
+	fmt.Println("  lnr skill")
+}
+
 func parseQuickArgs(args []string) (string, bool) {
 	var titleParts []string
 	jsonOutput := false
@@ -2009,7 +2022,7 @@ func printBashCompletion() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="quick issue auth configure set-team set-labels set-estimate set-status completion reset help"
+  commands="quick issue auth configure set-team set-labels set-estimate set-status completion reset skill help"
   global_flags="--clear-cache --json --quick -h --help"
   shells="bash zsh"
 
@@ -2019,6 +2032,10 @@ func printBashCompletion() {
   fi
 
   case "${COMP_WORDS[1]}" in
+    skill)
+      COMPREPLY=( $(compgen -W "-h --help" -- "${cur}") )
+      return 0
+      ;;
     quick)
       COMPREPLY=( $(compgen -W "--json -h --help" -- "${cur}") )
       return 0
@@ -2048,6 +2065,7 @@ func printZshCompletion() {
 _lnr() {
   local -a commands
   commands=(
+    'skill:Print the lnr skill for AI agent discovery'
     'quick:Create a Linear issue from a title'
     'issue:Find an issue in the default team'
     'auth:Manage OAuth sign-in'
@@ -2062,6 +2080,9 @@ _lnr() {
   )
 
   case $words[2] in
+    skill)
+      _arguments '-h[Show help]' '--help[Show help]'
+      ;;
     quick)
       _arguments '--json[Output JSON]' '-h[Show help]' '--help[Show help]' '*:title:'
       ;;
@@ -2116,7 +2137,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-estimate\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr set-status\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  lnr completion bash|zsh\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr reset\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  lnr skill\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -2154,6 +2176,12 @@ func main() {
 			runIssueSearch(getLinearAuthHeader(), searchTerm, jsonOutput || *jsonOutputFlag)
 		case "auth":
 			runAuth(args[1:])
+		case "skill":
+			if hasHelpArg(args[1:]) {
+				printSkillUsage()
+				return
+			}
+			printSkill(os.Stdout)
 		case "configure":
 			runConfigure(getLinearAuthHeader())
 		case "completion":

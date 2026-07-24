@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,18 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPrintSkill(t *testing.T) {
+	var output bytes.Buffer
+	printSkill(&output)
+
+	if output.String() != lnrSkill {
+		t.Fatal("expected skill command to print the embedded skill")
+	}
+	if !bytes.Contains(output.Bytes(), []byte("name: lnr")) {
+		t.Fatal("expected embedded skill metadata")
+	}
+}
 
 func TestParseQuickArgs(t *testing.T) {
 	title, jsonOutput := parseQuickArgs([]string{"--json", "Fix", "the", "thing"})
