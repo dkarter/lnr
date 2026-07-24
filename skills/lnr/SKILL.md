@@ -29,7 +29,7 @@ lnr quick --json "Fix flaky deployment check"
 ```
 
 The JSON object contains `issueId`, `branchName`, `title`, and `url`. Use the
-interactive form by running `lnr` when a description, assignee, or per-issue
+interactive form by running `lnr form` when a description, assignee, or per-issue
 choices are needed.
 
 ## Find an Issue

@@ -90,10 +90,16 @@ source ~/.bashrc.local
 
 ## Usage
 
-### Basic usage:
+### Command help:
 
 ```bash
 lnr
+```
+
+Open the interactive issue form:
+
+```bash
+lnr form
 ```
 
 ### Quick usage:
@@ -150,6 +156,8 @@ Generate shell completions:
 ```bash
 lnr completion bash
 lnr completion zsh
+lnr completion fish
+lnr completion powershell
 ```
 
 Reset cached teams, labels, and defaults:
@@ -164,11 +172,11 @@ For a better experience, add a shell function to your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
 # LNR form in tmux popup
-lnr() {
+lnr-form() {
   if [[ -n "$TMUX" ]]; then
-    tmux popup -w 80% -h 80% lnr
+    tmux popup -w 80% -h 80% 'lnr form'
   else
-    lnr
+    command lnr form
   fi
 }
 ```
@@ -176,7 +184,7 @@ lnr() {
 Add a keybinding to your `~/.tmux.conf`:
 
 ```tmux
-bind-key "i" display-popup -E -w 80% -h 80% lnr
+bind-key "i" display-popup -E -w 80% -h 80% 'lnr form'
 ```
 
 Then press `prefix + i` to open the form in a popup!
