@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/huh/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 )
 

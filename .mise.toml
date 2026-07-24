@@ -66,7 +66,7 @@ run = "go run main.go"
 
 [tasks.deps]
 description = "Download dependencies"
-run = "go get github.com/charmbracelet/huh"
+run = "go mod download"
 
 [tasks.info]
 description = "Show version info"
