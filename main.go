@@ -1913,6 +1913,28 @@ func printSkill(w io.Writer) {
 	fmt.Fprint(w, lnrSkill)
 }
 
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "help" || arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+func parseLegacyArgs(args []string) (string, bool) {
+	var parts []string
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		} else {
+			parts = append(parts, arg)
+		}
+	}
+	return strings.Join(parts, " "), jsonOutput
+}
+
 type commandHandlers struct {
 	authHeader  func() string
 	quick       func(string, string, bool)
@@ -1970,8 +1992,6 @@ func runAuthLogout() {
 func newRootCommand(handlers commandHandlers) *cobra.Command {
 	var clearCache bool
 	var rootJSON bool
-	var quickJSON bool
-	var issueJSON bool
 	var quickTitle string
 
 	root := &cobra.Command{
@@ -2012,30 +2032,50 @@ form when an issue needs a description, assignee, or per-issue choices.`,
 	root.Flags().StringVar(&quickTitle, "quick", "", "Create an issue from a title and print its branch name")
 
 	quickCmd := &cobra.Command{
-		Use:   "quick [flags] TITLE",
-		Short: "Create an issue from a title using saved defaults",
+		Use:                "quick [flags] TITLE",
+		Short:              "Create an issue from a title using saved defaults",
+		DisableFlagParsing: true,
 		Example: `  lnr quick "Fix flaky deployment check"
   lnr quick --json "Fix flaky deployment check"`,
-		Args: cobra.MinimumNArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
-			handlers.quick(handlers.authHeader(), strings.Join(args, " "), rootJSON || quickJSON)
+		Args: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return nil
+			}
+			title, _ := parseLegacyArgs(args)
+			if title == "" {
+				return fmt.Errorf("requires a title")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return cmd.Help()
+			}
+			title, commandJSON := parseLegacyArgs(args)
+			handlers.quick(handlers.authHeader(), title, rootJSON || commandJSON)
+			return nil
 		},
 	}
-	quickCmd.Flags().BoolVar(&quickJSON, "json", false, "Output the created issue as JSON")
+	quickCmd.Flags().Bool("json", false, "Output the created issue as JSON")
 
 	issueCmd := &cobra.Command{
-		Use:   "issue [flags] [SEARCH]",
-		Short: "Find an issue in the default team",
-		Long:  "Find an issue in the default team. With no search text, open an interactive issue picker.",
+		Use:                "issue [flags] [SEARCH]",
+		Short:              "Find an issue in the default team",
+		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker.",
+		DisableFlagParsing: true,
 		Example: `  lnr issue "deployment check"
   lnr issue --json "deployment check"
   lnr issue --json`,
-		Args: cobra.ArbitraryArgs,
-		Run: func(cmd *cobra.Command, args []string) {
-			handlers.issue(handlers.authHeader(), strings.Join(args, " "), rootJSON || issueJSON)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return cmd.Help()
+			}
+			searchTerm, commandJSON := parseLegacyArgs(args)
+			handlers.issue(handlers.authHeader(), searchTerm, rootJSON || commandJSON)
+			return nil
 		},
 	}
-	issueCmd.Flags().BoolVar(&issueJSON, "json", false, "Output the selected issue as JSON")
+	issueCmd.Flags().Bool("json", false, "Output the selected issue as JSON")
 
 	formCmd := &cobra.Command{
 		Use:   "form",

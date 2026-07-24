@@ -285,6 +285,21 @@ func TestQuickAndIssueParsing(t *testing.T) {
 	}
 }
 
+func TestQuickPreservesFlagLikeTitleWords(t *testing.T) {
+	var title string
+	handlers := stubCommandHandlers(new(int))
+	handlers.authHeader = func() string { return "auth" }
+	handlers.quick = func(_ string, value string, _ bool) { title = value }
+
+	_, err := executeCommand(t, handlers, "quick", "Fix", "--not-a-flag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Fix --not-a-flag" {
+		t.Fatalf("expected flag-like title word to be preserved, got %q", title)
+	}
+}
+
 func TestPrintSkill(t *testing.T) {
 	var output bytes.Buffer
 	printSkill(&output)
