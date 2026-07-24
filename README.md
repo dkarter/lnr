@@ -35,8 +35,7 @@ mise run install
 
 By default, `lnr` signs in with Linear OAuth using Dynamic Client Registration. You do not need to create a Linear OAuth app manually.
 
-<details>
-<summary>Authentication and token setup</summary>
+### OAuth
 
 Start the OAuth flow explicitly:
 
@@ -63,6 +62,11 @@ You can also bypass browser login with an existing OAuth access token:
 ```bash
 export LINEAR_OAUTH_ACCESS_TOKEN='your-oauth-access-token'
 ```
+
+### Token authentication
+
+<details>
+<summary>Personal API key setup</summary>
 
 Personal API keys are still supported and take precedence over OAuth:
 
