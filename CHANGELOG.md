@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0](https://github.com/dkarter/lnr/compare/v2.0.0...v2.1.0) (2026-07-24)
+
+
+### Features
+
+* add version flag ([3fa92eb](https://github.com/dkarter/lnr/commit/3fa92eba977f043cb4ee81c132365f0b20771d8b))
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/spf13/cobra to v1.10.2 ([#22](https://github.com/dkarter/lnr/issues/22)) ([6e917da](https://github.com/dkarter/lnr/commit/6e917da25919b84dedade6b06543500e7d88bfa4))
+
 ## [2.0.0](https://github.com/dkarter/lnr/compare/v1.4.0...v2.0.0) (2026-07-24)
 
 
