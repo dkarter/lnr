@@ -50,6 +50,12 @@ type Issue struct {
 	URL        string `json:"url"`
 }
 
+type IssueCreateOptions struct {
+	Title       string
+	Description string
+	JSON        bool
+}
+
 type UserSelections struct {
 	TeamId     string   `json:"teamId"`
 	AssigneeId string   `json:"assigneeId"`
@@ -1713,7 +1719,11 @@ func runSetStatus(apiKey string) {
 }
 
 func runQuickCreate(apiKey, title string, jsonOutput bool) {
-	title = strings.TrimSpace(title)
+	runIssueCreate(apiKey, IssueCreateOptions{Title: title, JSON: jsonOutput})
+}
+
+func runIssueCreate(apiKey string, options IssueCreateOptions) {
+	title := strings.TrimSpace(options.Title)
 	if title == "" {
 		fmt.Println("❌ Title cannot be empty")
 		os.Exit(1)
@@ -1729,18 +1739,23 @@ func runQuickCreate(apiKey, title string, jsonOutput bool) {
 	_, labelMap := labelOptions(labels)
 
 	issue, err := createLinearTicket(apiKey, LinearTicket{
-		Title:      title,
-		TeamId:     teamId,
-		Labels:     selections.Labels,
-		Estimate:   selections.Estimate,
-		AssigneeId: selections.AssigneeId,
-		StatusId:   selections.StatusId,
+		Title:       title,
+		Description: options.Description,
+		TeamId:      teamId,
+		Labels:      selections.Labels,
+		Estimate:    selections.Estimate,
+		AssigneeId:  selections.AssigneeId,
+		StatusId:    selections.StatusId,
 	}, labelMap)
 	if err != nil {
 		fmt.Printf("❌ Error creating ticket: %v\n", err)
 		os.Exit(1)
 	}
 
+	outputCreatedIssue(issue, options.JSON)
+}
+
+func outputCreatedIssue(issue CreatedIssue, jsonOutput bool) {
 	branchName := fallbackBranchName(issue)
 	issue.BranchName = branchName
 	if jsonOutput {
@@ -1938,6 +1953,7 @@ func parseLegacyArgs(args []string) (string, bool) {
 type commandHandlers struct {
 	authHeader  func() string
 	quick       func(string, string, bool)
+	create      func(string, IssueCreateOptions)
 	issue       func(string, string, bool)
 	form        func()
 	login       func()
@@ -1955,6 +1971,7 @@ func defaultCommandHandlers() commandHandlers {
 	return commandHandlers{
 		authHeader:  getLinearAuthHeader,
 		quick:       runQuickCreate,
+		create:      runIssueCreate,
 		issue:       runIssueSearch,
 		form:        runForm,
 		login:       runAuthLogin,
@@ -2000,16 +2017,16 @@ func newRootCommand(handlers commandHandlers) *cobra.Command {
 		Long: `lnr is a focused Linear CLI for creating issues, finding existing work,
 and printing branch names for humans and coding agents.
 
-Use quick commands with saved defaults for automation, or open the interactive
-form when an issue needs a description, assignee, or per-issue choices.`,
+Use quick commands with saved defaults for automation, or create an issue
+interactively when it needs a description, assignee, or per-issue choices.`,
 		Example: `  # Create an issue non-interactively and return structured output
   lnr quick --json "Fix flaky deployment check"
 
   # Find an issue and print its Linear branch name
-  lnr issue "deployment check"
+  lnr issue search "deployment check"
 
-  # Open the full interactive issue form
-  lnr form`,
+  # Create an issue with the full interactive workflow
+  lnr issue create`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2028,12 +2045,13 @@ form when an issue needs a description, assignee, or per-issue choices.`,
 		return err
 	})
 	root.Flags().BoolVar(&clearCache, "clear-cache", false, "Clear cached API data and saved defaults")
-	root.Flags().BoolVar(&rootJSON, "json", false, "Output supported command results as JSON")
+	root.PersistentFlags().BoolVar(&rootJSON, "json", false, "Output supported command results as JSON")
 	root.Flags().StringVar(&quickTitle, "quick", "", "Create an issue from a title and print its branch name")
 
 	quickCmd := &cobra.Command{
 		Use:                "quick [flags] TITLE",
 		Short:              "Create an issue from a title using saved defaults",
+		Long:               "Create an issue from a title using saved defaults. Prints and copies the Linear branch name by default.",
 		DisableFlagParsing: true,
 		Example: `  lnr quick "Fix flaky deployment check"
   lnr quick --json "Fix flaky deployment check"`,
@@ -2059,33 +2077,43 @@ form when an issue needs a description, assignee, or per-issue choices.`,
 	quickCmd.Flags().Bool("json", false, "Output the created issue as JSON")
 
 	issueCmd := &cobra.Command{
-		Use:                "issue [flags] [SEARCH]",
-		Short:              "Find an issue in the default team",
-		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker.",
-		DisableFlagParsing: true,
-		Example: `  lnr issue "deployment check"
-  lnr issue --json "deployment check"
-  lnr issue --json`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if hasHelpArg(args) {
-				return cmd.Help()
-			}
-			searchTerm, commandJSON := parseLegacyArgs(args)
-			handlers.issue(handlers.authHeader(), searchTerm, rootJSON || commandJSON)
-			return nil
-		},
-	}
-	issueCmd.Flags().Bool("json", false, "Output the selected issue as JSON")
-
-	formCmd := &cobra.Command{
-		Use:   "form",
-		Short: "Open the interactive issue form",
-		Long:  "Open the full interactive form to create a Linear issue with a description, status, estimate, labels, and assignee.",
+		Use:   "issue",
+		Short: "Work with Linear issues",
 		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
-			handlers.form()
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
 		},
 	}
+	issueCmd.AddCommand(newIssueSearchCommand(
+		"search [flags] [SEARCH]",
+		"Find an issue in the default team",
+		`  lnr issue search "deployment check"
+  lnr issue search --json "deployment check"
+  lnr issue search --json`,
+		&rootJSON,
+		handlers,
+	))
+	issueCmd.AddCommand(newIssueCreateCommand(
+		"create",
+		"Create a Linear issue",
+		&rootJSON,
+		handlers,
+	))
+	issueSearchAliasCmd := newIssueSearchCommand(
+		"is [flags] [SEARCH]",
+		`Search issues (alias for "lnr issue search")`,
+		`  lnr is "deployment check"
+  lnr is --json "deployment check"
+  lnr is --json`,
+		&rootJSON,
+		handlers,
+	)
+	issueCreateAliasCmd := newIssueCreateCommand(
+		"ic",
+		`Create an issue (alias for "lnr issue create")`,
+		&rootJSON,
+		handlers,
+	)
 
 	authCmd := &cobra.Command{
 		Use:   "auth",
@@ -2113,7 +2141,8 @@ form when an issue needs a description, assignee, or per-issue choices.`,
 	root.AddCommand(
 		quickCmd,
 		issueCmd,
-		formCmd,
+		issueSearchAliasCmd,
+		issueCreateAliasCmd,
 		authCmd,
 		noArgsCommand("configure", "Configure defaults for quick issue creation", func() {
 			handlers.configure(handlers.authHeader())
@@ -2148,6 +2177,55 @@ form when an issue needs a description, assignee, or per-issue choices.`,
 	)
 
 	return root
+}
+
+func newIssueCreateCommand(use, short string, rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	var options IssueCreateOptions
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Long: `Create a Linear issue using configured defaults for team, labels, estimate,
+status, and assignee. With no creation flags, opens the interactive workflow.
+Non-interactive creation prints and copies the Linear branch name by default.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nonInteractive := options.Title != "" || options.Description != "" || options.JSON || *rootJSON
+			if !nonInteractive {
+				handlers.form()
+				return nil
+			}
+			if strings.TrimSpace(options.Title) == "" {
+				return fmt.Errorf("--title is required for non-interactive creation")
+			}
+			options.JSON = options.JSON || *rootJSON
+			handlers.create(handlers.authHeader(), options)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&options.Title, "title", "", "Issue title for non-interactive creation")
+	cmd.Flags().StringVar(&options.Description, "description", "", "Issue description for non-interactive creation")
+	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the created issue as JSON")
+	return cmd
+}
+
+func newIssueSearchCommand(use, short, example string, rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                use,
+		Short:              short,
+		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker. Prints and copies the Linear branch name by default.",
+		Example:            example,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpArg(args) {
+				return cmd.Help()
+			}
+			searchTerm, commandJSON := parseLegacyArgs(args)
+			handlers.issue(handlers.authHeader(), searchTerm, *rootJSON || commandJSON)
+			return nil
+		},
+	}
+	cmd.Flags().Bool("json", false, "Output the selected issue as JSON")
+	return cmd
 }
 
 func runReset(cmd *cobra.Command, reset func() error) error {

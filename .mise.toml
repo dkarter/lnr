@@ -24,11 +24,11 @@ echo ""
 echo "📝 To add a convenient alias for opening the form in a tmux popup, add this to your ~/.zshrc:"
 echo ""
 echo "# LNR form in tmux popup"
-echo 'lnr-form() {'
+echo 'lnr-create() {'
 echo '  if [[ -n "$TMUX" ]]; then'
-echo "    tmux popup -w 80% -h 80% 'lnr form'"
+echo "    tmux popup -w 80% -h 80% 'lnr issue create'"
 echo '  else'
-echo '    command lnr form'
+echo '    command lnr issue create'
 echo '  fi'
 echo '}'
 echo ""
@@ -36,7 +36,7 @@ echo "Then run: source ~/.zshrc"
 echo
 echo "You can also add a tmux bindings to your tmux config:"
 echo
-echo "  bind-key \"i\" display-popup -E -w 80% -h 80% 'lnr form'"
+echo "  bind-key \"i\" display-popup -E -w 80% -h 80% 'lnr issue create'"
 echo
 echo 'And you can map a key in Ghostty to launch the tmux shortcut:'
 echo

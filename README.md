@@ -96,10 +96,21 @@ source ~/.bashrc.local
 lnr
 ```
 
-Open the interactive issue form:
+Create an issue with the interactive workflow:
 
 ```bash
-lnr form
+lnr issue create
+lnr ic # Short alias
+```
+
+Create non-interactively with configured defaults. This prints and copies the
+Linear branch name by default:
+
+```bash
+lnr issue create --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
+lnr ic --json --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
 ```
 
 ### Quick usage:
@@ -135,20 +146,23 @@ lnr quick --json "Fix flaky deployment check"
 Fuzzy find a recent issue in the default team and print/copy its branch name:
 
 ```bash
-lnr issue
+lnr issue search
 ```
 
 Return JSON for the selected issue:
 
 ```bash
-lnr issue --json
+lnr issue search --json
 ```
 
 Search non-interactively and print/copy the best match:
 
 ```bash
-lnr issue "deployment check"
-lnr issue --json "deployment check"
+lnr issue search "deployment check"
+lnr issue search --json "deployment check"
+
+# Short alias
+lnr is --json "deployment check"
 ```
 
 Generate shell completions:
@@ -171,12 +185,12 @@ lnr reset
 For a better experience, add a shell function to your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-# LNR form in tmux popup
-lnr-form() {
+# LNR issue creation in tmux popup
+lnr-create() {
   if [[ -n "$TMUX" ]]; then
-    tmux popup -w 80% -h 80% 'lnr form'
+    tmux popup -w 80% -h 80% 'lnr issue create'
   else
-    command lnr form
+    command lnr issue create
   fi
 }
 ```
@@ -184,7 +198,7 @@ lnr-form() {
 Add a keybinding to your `~/.tmux.conf`:
 
 ```tmux
-bind-key "i" display-popup -E -w 80% -h 80% 'lnr form'
+bind-key "i" display-popup -E -w 80% -h 80% 'lnr issue create'
 ```
 
 Then press `prefix + i` to open the form in a popup!

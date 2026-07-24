@@ -47,6 +47,7 @@ func stubCommandHandlers(executions *int) commandHandlers {
 			return "test-auth"
 		},
 		quick:       func(string, string, bool) { run() },
+		create:      func(string, IssueCreateOptions) { run() },
 		issue:       func(string, string, bool) { run() },
 		form:        run,
 		login:       run,
@@ -89,9 +90,10 @@ func TestRootHelp(t *testing.T) {
 			for _, expected := range []string{
 				"lnr is a focused Linear CLI",
 				"Available Commands:",
-				"form",
 				"quick",
 				"issue",
+				"is",
+				"ic",
 				"auth",
 				"--clear-cache",
 				"lnr quick --json",
@@ -109,7 +111,8 @@ func TestRootHelp(t *testing.T) {
 
 func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
 	paths := [][]string{
-		{"form"}, {"quick"}, {"issue"}, {"auth"}, {"auth", "login"}, {"auth", "logout"},
+		{"quick"}, {"issue"}, {"issue", "create"}, {"issue", "search"}, {"ic"}, {"is"},
+		{"auth"}, {"auth", "login"}, {"auth", "logout"},
 		{"configure"}, {"set-team"}, {"set-labels"}, {"set-estimate"}, {"set-status"},
 		{"completion"}, {"reset"}, {"skill"},
 	}
@@ -123,6 +126,32 @@ func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
 			}
 			if !strings.Contains(output, "Usage:") {
 				t.Fatalf("expected command help, got:\n%s", output)
+			}
+			if executions != 0 {
+				t.Fatalf("expected help not to execute handlers, got %d executions", executions)
+			}
+		})
+	}
+}
+
+func TestIssueCommandHelpDescribesBranchNameOutput(t *testing.T) {
+	paths := [][]string{
+		{"quick"},
+		{"issue", "create"},
+		{"ic"},
+		{"issue", "search"},
+		{"is"},
+	}
+	for _, path := range paths {
+		t.Run(strings.Join(path, "_"), func(t *testing.T) {
+			executions := 0
+			args := append(append([]string(nil), path...), "--help")
+			output, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output, "Linear branch name by default") {
+				t.Fatalf("expected branch-name behavior in help, got:\n%s", output)
 			}
 			if executions != 0 {
 				t.Fatalf("expected help not to execute handlers, got %d executions", executions)
@@ -168,7 +197,10 @@ func TestCompletionShells(t *testing.T) {
 func TestCommandArgumentValidationDoesNotExecute(t *testing.T) {
 	tests := [][]string{
 		{"quick"},
-		{"form", "extra"},
+		{"issue", "create", "extra"},
+		{"issue", "create", "--description", "Missing title"},
+		{"ic", "extra"},
+		{"issue", "deployment"},
 		{"auth", "login", "extra"},
 		{"completion"},
 		{"completion", "unsupported"},
@@ -264,7 +296,8 @@ func TestQuickAndIssueParsing(t *testing.T) {
 		want string
 	}{
 		{name: "quick", args: []string{"quick", "--json", "Fix", "the", "thing"}, want: "Fix the thing"},
-		{name: "issue", args: []string{"issue", "--json", "deployment", "check"}, want: "deployment check"},
+		{name: "issue search", args: []string{"issue", "search", "--json", "deployment", "check"}, want: "deployment check"},
+		{name: "is alias", args: []string{"is", "--json", "deployment", "check"}, want: "deployment check"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,6 +316,93 @@ func TestQuickAndIssueParsing(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBareIssueShowsHelpWithoutSearching(t *testing.T) {
+	executions := 0
+	output, err := executeCommand(t, stubCommandHandlers(&executions), "issue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"create", "search"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected issue help to list %q, got:\n%s", expected, output)
+		}
+	}
+	if executions != 0 {
+		t.Fatalf("expected issue help not to execute handlers, got %d executions", executions)
+	}
+}
+
+func TestIssueCreatePaths(t *testing.T) {
+	for _, args := range [][]string{{"issue", "create"}, {"ic"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			executions := 0
+			handlers := stubCommandHandlers(&executions)
+			_, err := executeCommand(t, handlers, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if executions != 1 {
+				t.Fatalf("expected only issue creation to execute, got %d handlers", executions)
+			}
+		})
+	}
+}
+
+func TestIssueCreateNonInteractive(t *testing.T) {
+	for _, args := range [][]string{
+		{"issue", "create", "--title", "Fix deployment", "--description", "More details", "--json"},
+		{"ic", "--title", "Fix deployment", "--description", "More details", "--json"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			var auth string
+			var options IssueCreateOptions
+			handlers := stubCommandHandlers(new(int))
+			handlers.authHeader = func() string { return "test-auth" }
+			handlers.create = func(gotAuth string, gotOptions IssueCreateOptions) {
+				auth, options = gotAuth, gotOptions
+			}
+
+			_, err := executeCommand(t, handlers, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if auth != "test-auth" || options.Title != "Fix deployment" || options.Description != "More details" || !options.JSON {
+				t.Fatalf("unexpected non-interactive create values: auth=%q options=%+v", auth, options)
+			}
+		})
+	}
+}
+
+func TestRootJSONReachesNestedIssueCommands(t *testing.T) {
+	t.Run("search", func(t *testing.T) {
+		var jsonOutput bool
+		handlers := stubCommandHandlers(new(int))
+		handlers.authHeader = func() string { return "auth" }
+		handlers.issue = func(_ string, _ string, json bool) { jsonOutput = json }
+		_, err := executeCommand(t, handlers, "--json", "issue", "search", "deployment")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !jsonOutput {
+			t.Fatal("expected root --json to reach issue search")
+		}
+	})
+
+	t.Run("create", func(t *testing.T) {
+		var options IssueCreateOptions
+		handlers := stubCommandHandlers(new(int))
+		handlers.authHeader = func() string { return "auth" }
+		handlers.create = func(_ string, got IssueCreateOptions) { options = got }
+		_, err := executeCommand(t, handlers, "--json", "issue", "create", "--title", "Fix deployment")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !options.JSON {
+			t.Fatal("expected root --json to reach issue create")
+		}
+	})
 }
 
 func TestQuickPreservesFlagLikeTitleWords(t *testing.T) {
