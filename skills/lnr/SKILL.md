@@ -1,27 +1,12 @@
 ---
 name: lnr
-description: Use the local lnr CLI to create Linear issues, find existing issues, and get Linear branch names. Use when an agent needs to create or look up a Linear issue from the terminal, configure lnr defaults, or authenticate lnr.
+description: Use the local lnr CLI non-interactively to create Linear tickets and work with their branches.
 ---
 
 # lnr
 
-Use `lnr` for focused Linear issue workflows. Prefer its JSON output for
-non-interactive agent use.
-
-## Setup
-
-Authenticate through the browser if needed:
-
-```bash
-lnr auth login
-```
-
-Run `lnr config` once to select the default team, labels, estimate, and status
-used by quick creation and issue search. The individual configuration commands
-are `config set-team`, `config set-labels`, `config set-estimate`, and
-`config set-status`.
-
-## Create an Issue
+Use `lnr` to create Linear tickets and obtain or check out their branches.
+Never run a command that can prompt for terminal input.
 
 Create from a title using saved defaults:
 
@@ -29,38 +14,22 @@ Create from a title using saved defaults:
 lnr quick --json "Fix flaky deployment check"
 ```
 
-Create non-interactively with a description and the same configured defaults:
+The JSON result contains `issueId`, `branchName`, `title`, and `url`.
+
+Create with a description:
 
 ```bash
 lnr issue create --json --title "Fix flaky deployment check" \
   --description "The deployment check fails intermittently."
 ```
 
-The JSON object contains `issueId`, `branchName`, `title`, and `url`. Without
-`--json`, creation prints and attempts to copy the Linear branch name. Run
-`lnr issue create` without creation flags for the interactive workflow. The
-shorter alias is `lnr ic`.
-
-## Find an Issue
-
-Search recent issues in the default team and return the best match:
+Create a ticket and immediately check out its Linear branch:
 
 ```bash
-lnr issue search --json "deployment check"
+lnr quick --checkout "Fix flaky deployment check"
+# Short form:
+lnr quick -c "Fix flaky deployment check"
 ```
 
-Run `lnr issue search --json` without a search term for an interactive picker.
-The shorter `lnr is` alias accepts the same arguments. The JSON shape matches
-quick creation.
-
-## Operational Notes
-
-- Run `lnr COMMAND --help` before guessing command syntax.
-- Use `lnr reset` to clear cached API data and saved defaults.
-- `lnr auth login` and `lnr auth logout` clear cached data and defaults so
-  account-specific teams and settings cannot leak across Linear accounts.
-- `LINEAR_API_KEY` takes precedence over OAuth. `LINEAR_OAUTH_ACCESS_TOKEN` can
-  provide an existing OAuth token; otherwise lnr uses browser login and caches
-  its token securely.
-- Without `--json`, quick creation and issue lookup print the branch name and
-  attempt to copy it to the clipboard.
+Always provide `--title` to `issue create` and a title argument to `quick`.
+Never combine `--json` with `--checkout`.

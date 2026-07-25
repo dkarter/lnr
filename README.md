@@ -145,8 +145,19 @@ lnr config set-status
 Create an issue from only a title and print/copy Linear's branch name:
 
 ```bash
+lnr quick
 lnr quick "Fix flaky deployment check"
 lnr --quick "Fix flaky deployment check"
+```
+
+When the title is omitted, `lnr quick` prompts for it interactively.
+
+Create the issue and immediately check out its Linear branch without printing or
+copying the branch name:
+
+```bash
+lnr quick --checkout "Fix flaky deployment check"
+lnr quick -c
 ```
 
 Return JSON instead of copying the branch name:

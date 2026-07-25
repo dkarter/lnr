@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,17 +47,22 @@ func stubCommandHandlers(executions *int) commandHandlers {
 			run()
 			return "test-auth"
 		},
-		quick:       func(string, string, bool) { run() },
-		create:      func(string, IssueCreateOptions) { run() },
-		issue:       func(string, string, bool) { run() },
-		form:        run,
-		login:       run,
-		logout:      run,
-		configure:   runWithAuth,
-		setTeam:     runWithAuth,
-		setLabels:   runWithAuth,
-		setEstimate: run,
-		setStatus:   runWithAuth,
+		promptTitle: func() (string, error) {
+			run()
+			return "Prompted title", nil
+		},
+		checkoutReady: func() error { run(); return nil },
+		quick:         func(string, string, bool, bool) { run() },
+		create:        func(string, IssueCreateOptions) { run() },
+		issue:         func(string, string, bool) { run() },
+		form:          run,
+		login:         run,
+		logout:        run,
+		configure:     runWithAuth,
+		setTeam:       runWithAuth,
+		setLabels:     runWithAuth,
+		setEstimate:   run,
+		setStatus:     runWithAuth,
 		reset: func() error {
 			run()
 			return nil
@@ -213,7 +219,6 @@ func TestCompletionShells(t *testing.T) {
 
 func TestCommandArgumentValidationDoesNotExecute(t *testing.T) {
 	tests := [][]string{
-		{"quick"},
 		{"issue", "create", "extra"},
 		{"issue", "create", "--description", "Missing title"},
 		{"ic", "extra"},
@@ -259,7 +264,7 @@ func TestLegacyRootFlags(t *testing.T) {
 		var jsonOutput bool
 		handlers := stubCommandHandlers(new(int))
 		handlers.authHeader = func() string { return "legacy-auth" }
-		handlers.quick = func(gotAuth, gotTitle string, gotJSON bool) {
+		handlers.quick = func(gotAuth, gotTitle string, gotJSON, _ bool) {
 			auth, title, jsonOutput = gotAuth, gotTitle, gotJSON
 		}
 
@@ -277,7 +282,7 @@ func TestLegacyRootFlags(t *testing.T) {
 		var jsonOutput bool
 		handlers := stubCommandHandlers(new(int))
 		handlers.authHeader = func() string { return "legacy-auth" }
-		handlers.quick = func(_ string, gotTitle string, gotJSON bool) {
+		handlers.quick = func(_ string, gotTitle string, gotJSON, _ bool) {
 			title, jsonOutput = gotTitle, gotJSON
 		}
 
@@ -323,7 +328,7 @@ func TestQuickAndIssueParsing(t *testing.T) {
 			var jsonOutput bool
 			handlers := stubCommandHandlers(new(int))
 			handlers.authHeader = func() string { return "auth" }
-			handlers.quick = func(_ string, value string, json bool) { text, jsonOutput = value, json }
+			handlers.quick = func(_ string, value string, json, _ bool) { text, jsonOutput = value, json }
 			handlers.issue = func(_ string, value string, json bool) { text, jsonOutput = value, json }
 			_, err := executeCommand(t, handlers, tt.args...)
 			if err != nil {
@@ -333,6 +338,90 @@ func TestQuickAndIssueParsing(t *testing.T) {
 				t.Fatalf("got text=%q json=%v", text, jsonOutput)
 			}
 		})
+	}
+}
+
+func TestQuickPromptsForMissingTitle(t *testing.T) {
+	var title string
+	prompts := 0
+	handlers := stubCommandHandlers(new(int))
+	handlers.authHeader = func() string { return "auth" }
+	handlers.promptTitle = func() (string, error) {
+		prompts++
+		return "Fix the prompted thing", nil
+	}
+	handlers.quick = func(_ string, value string, _, _ bool) { title = value }
+
+	_, err := executeCommand(t, handlers, "quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompts != 1 {
+		t.Fatalf("expected one title prompt, got %d", prompts)
+	}
+	if title != "Fix the prompted thing" {
+		t.Fatalf("expected prompted title, got %q", title)
+	}
+}
+
+func TestQuickCheckout(t *testing.T) {
+	var title string
+	var checkout bool
+	handlers := stubCommandHandlers(new(int))
+	handlers.authHeader = func() string { return "auth" }
+	handlers.quick = func(_ string, value string, _ bool, gotCheckout bool) {
+		title, checkout = value, gotCheckout
+	}
+
+	_, err := executeCommand(t, handlers, "quick", "-c", "Fix", "the", "thing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Fix the thing" || !checkout {
+		t.Fatalf("got title=%q checkout=%v", title, checkout)
+	}
+}
+
+func TestQuickCheckoutHonorsFlagDelimiter(t *testing.T) {
+	var title string
+	var checkout bool
+	handlers := stubCommandHandlers(new(int))
+	handlers.authHeader = func() string { return "auth" }
+	handlers.quick = func(_ string, value string, _ bool, gotCheckout bool) {
+		title, checkout = value, gotCheckout
+	}
+
+	_, err := executeCommand(t, handlers, "quick", "--", "Document", "--checkout", "behavior")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Document --checkout behavior" || checkout {
+		t.Fatalf("got title=%q checkout=%v", title, checkout)
+	}
+}
+
+func TestQuickCheckoutPreflightFailure(t *testing.T) {
+	executions := 0
+	handlers := stubCommandHandlers(&executions)
+	handlers.checkoutReady = func() error { return fmt.Errorf("not a worktree") }
+
+	_, err := executeCommand(t, handlers, "quick", "--checkout", "Fix it")
+	if err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("expected preflight error, got %v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("checkout preflight failure executed %d handlers", executions)
+	}
+}
+
+func TestQuickRejectsCheckoutWithJSON(t *testing.T) {
+	executions := 0
+	_, err := executeCommand(t, stubCommandHandlers(&executions), "quick", "--json", "--checkout", "Fix it")
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("expected conflicting flag error, got %v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("flag conflict executed %d handlers", executions)
 	}
 }
 
@@ -489,7 +578,7 @@ func TestQuickPreservesFlagLikeTitleWords(t *testing.T) {
 	var title string
 	handlers := stubCommandHandlers(new(int))
 	handlers.authHeader = func() string { return "auth" }
-	handlers.quick = func(_ string, value string, _ bool) { title = value }
+	handlers.quick = func(_ string, value string, _, _ bool) { title = value }
 
 	_, err := executeCommand(t, handlers, "quick", "Fix", "--not-a-flag")
 	if err != nil {
@@ -521,6 +610,28 @@ func TestFallbackBranchName(t *testing.T) {
 	issue = CreatedIssue{Identifier: "PLT-123"}
 	if branchName := fallbackBranchName(issue); branchName != "plt-123" {
 		t.Fatalf("expected branch name %q, got %q", "plt-123", branchName)
+	}
+}
+
+func TestCheckoutBranch(t *testing.T) {
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", repo).CombinedOutput(); err != nil {
+		t.Fatalf("initialize repository: %v\n%s", err, output)
+	}
+	t.Chdir(repo)
+
+	if err := checkGitWorktree(); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkoutBranch("plt-123-fix-the-thing"); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("git", "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch := strings.TrimSpace(string(output)); branch != "plt-123-fix-the-thing" {
+		t.Fatalf("expected checked out branch, got %q", branch)
 	}
 }
 

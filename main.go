@@ -54,6 +54,7 @@ type IssueCreateOptions struct {
 	Title       string
 	Description string
 	JSON        bool
+	Checkout    bool
 }
 
 type UserSelections struct {
@@ -1719,8 +1720,8 @@ func runSetStatus(apiKey string) {
 	fmt.Println("✅ Default status saved")
 }
 
-func runQuickCreate(apiKey, title string, jsonOutput bool) {
-	runIssueCreate(apiKey, IssueCreateOptions{Title: title, JSON: jsonOutput})
+func runQuickCreate(apiKey, title string, jsonOutput, checkout bool) {
+	runIssueCreate(apiKey, IssueCreateOptions{Title: title, JSON: jsonOutput, Checkout: checkout})
 }
 
 func runIssueCreate(apiKey string, options IssueCreateOptions) {
@@ -1753,7 +1754,35 @@ func runIssueCreate(apiKey string, options IssueCreateOptions) {
 		os.Exit(1)
 	}
 
+	if options.Checkout {
+		if err := checkoutBranch(fallbackBranchName(issue)); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to create and check out branch: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	outputCreatedIssue(issue, options.JSON)
+}
+
+func checkoutBranch(branchName string) error {
+	cmd := exec.Command("git", "checkout", "-b", branchName)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func checkGitWorktree() error {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("checkout requires a Git worktree: %w", err)
+	}
+	if strings.TrimSpace(string(output)) != "true" {
+		return fmt.Errorf("checkout requires a Git worktree")
+	}
+	return nil
 }
 
 func outputCreatedIssue(issue CreatedIssue, jsonOutput bool) {
@@ -1931,6 +1960,9 @@ func printSkill(w io.Writer) {
 
 func hasHelpArg(args []string) bool {
 	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
 		if arg == "help" || arg == "-h" || arg == "--help" {
 			return true
 		}
@@ -1951,40 +1983,86 @@ func parseLegacyArgs(args []string) (string, bool) {
 	return strings.Join(parts, " "), jsonOutput
 }
 
+func parseQuickArgs(args []string) (title string, jsonOutput, checkout bool) {
+	var parts []string
+	flags := true
+	for _, arg := range args {
+		if flags && arg == "--" {
+			flags = false
+			continue
+		}
+		if !flags {
+			parts = append(parts, arg)
+			continue
+		}
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		case "--checkout", "-c":
+			checkout = true
+		default:
+			parts = append(parts, arg)
+		}
+	}
+	return strings.Join(parts, " "), jsonOutput, checkout
+}
+
 type commandHandlers struct {
-	authHeader  func() string
-	quick       func(string, string, bool)
-	create      func(string, IssueCreateOptions)
-	issue       func(string, string, bool)
-	form        func()
-	login       func()
-	logout      func()
-	configure   func(string)
-	setTeam     func(string)
-	setLabels   func(string)
-	setEstimate func()
-	setStatus   func(string)
-	reset       func() error
-	skill       func(io.Writer)
+	authHeader    func() string
+	promptTitle   func() (string, error)
+	checkoutReady func() error
+	quick         func(string, string, bool, bool)
+	create        func(string, IssueCreateOptions)
+	issue         func(string, string, bool)
+	form          func()
+	login         func()
+	logout        func()
+	configure     func(string)
+	setTeam       func(string)
+	setLabels     func(string)
+	setEstimate   func()
+	setStatus     func(string)
+	reset         func() error
+	skill         func(io.Writer)
 }
 
 func defaultCommandHandlers() commandHandlers {
 	return commandHandlers{
-		authHeader:  getLinearAuthHeader,
-		quick:       runQuickCreate,
-		create:      runIssueCreate,
-		issue:       runIssueSearch,
-		form:        runForm,
-		login:       runAuthLogin,
-		logout:      runAuthLogout,
-		configure:   runConfigure,
-		setTeam:     runSetTeam,
-		setLabels:   runSetLabels,
-		setEstimate: runSetEstimate,
-		setStatus:   runSetStatus,
-		reset:       resetData,
-		skill:       printSkill,
+		authHeader:    getLinearAuthHeader,
+		promptTitle:   promptQuickTitle,
+		checkoutReady: checkGitWorktree,
+		quick:         runQuickCreate,
+		create:        runIssueCreate,
+		issue:         runIssueSearch,
+		form:          runForm,
+		login:         runAuthLogin,
+		logout:        runAuthLogout,
+		configure:     runConfigure,
+		setTeam:       runSetTeam,
+		setLabels:     runSetLabels,
+		setEstimate:   runSetEstimate,
+		setStatus:     runSetStatus,
+		reset:         resetData,
+		skill:         printSkill,
 	}
+}
+
+func validateTitle(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("title cannot be empty")
+	}
+	return nil
+}
+
+func promptQuickTitle() (string, error) {
+	var title string
+	err := huh.NewInput().
+		Title("Ticket title").
+		Placeholder("Issue title...").
+		Value(&title).
+		Validate(validateTitle).
+		Run()
+	return title, err
 }
 
 func runAuthLogin() {
@@ -2036,7 +2114,7 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 			case clearCache:
 				return runReset(cmd, handlers.reset)
 			case quickTitle != "":
-				handlers.quick(handlers.authHeader(), quickTitle, rootJSON)
+				handlers.quick(handlers.authHeader(), quickTitle, rootJSON, false)
 				return nil
 			default:
 				return cmd.Help()
@@ -2051,32 +2129,41 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 	root.Flags().StringVar(&quickTitle, "quick", "", "Create an issue from a title and print its branch name")
 
 	quickCmd := &cobra.Command{
-		Use:                "quick [flags] TITLE",
+		Use:                "quick [flags] [TITLE]",
 		Short:              "Create an issue from a title using saved defaults",
-		Long:               "Create an issue from a title using saved defaults. Prints and copies the Linear branch name by default.",
+		Long:               "Create an issue from a title using saved defaults. Prompts for the title when omitted. Prints and copies the Linear branch name by default.",
 		DisableFlagParsing: true,
-		Example: `  lnr quick "Fix flaky deployment check"
-  lnr quick --json "Fix flaky deployment check"`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if hasHelpArg(args) {
-				return nil
-			}
-			title, _ := parseLegacyArgs(args)
-			if title == "" {
-				return fmt.Errorf("requires a title")
-			}
-			return nil
-		},
+		Example: `  lnr quick
+  lnr quick "Fix flaky deployment check"
+  lnr quick --json "Fix flaky deployment check"
+  lnr quick --checkout "Fix flaky deployment check"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpArg(args) {
 				return cmd.Help()
 			}
-			title, commandJSON := parseLegacyArgs(args)
-			handlers.quick(handlers.authHeader(), title, rootJSON || commandJSON)
+			title, commandJSON, checkout := parseQuickArgs(args)
+			jsonOutput := rootJSON || commandJSON
+			if jsonOutput && checkout {
+				return fmt.Errorf("--json and --checkout cannot be used together")
+			}
+			if checkout {
+				if err := handlers.checkoutReady(); err != nil {
+					return err
+				}
+			}
+			if title == "" {
+				var err error
+				title, err = handlers.promptTitle()
+				if err != nil {
+					return err
+				}
+			}
+			handlers.quick(handlers.authHeader(), title, jsonOutput, checkout)
 			return nil
 		},
 	}
 	quickCmd.Flags().Bool("json", false, "Output the created issue as JSON")
+	quickCmd.Flags().BoolP("checkout", "c", false, "Create and check out the Linear branch")
 
 	issueCmd := &cobra.Command{
 		Use:   "issue",
@@ -2435,12 +2522,7 @@ func runForm() {
 				Title("Ticket Title").
 				Description("A brief summary of the issue or feature").
 				Value(&ticket.Title).
-				Validate(func(s string) error {
-					if s == "" {
-						return fmt.Errorf("title cannot be empty")
-					}
-					return nil
-				}),
+				Validate(validateTitle),
 
 			huh.NewText().
 				Title("Description").
