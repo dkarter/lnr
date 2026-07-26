@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.0](https://github.com/dkarter/lnr/compare/v2.2.0...v3.0.0) (2026-07-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* make branch copying opt-in
+
+### Features
+
+* make branch copying opt-in ([6d59419](https://github.com/dkarter/lnr/commit/6d594190c89b9311b3a18860b23caaec36e5ca1c))
+* prompt for quick titles and checkout branches ([45d77f9](https://github.com/dkarter/lnr/commit/45d77f967b5eb69ad90063e49c09e4e372520b0a))
+
 ## [2.2.0](https://github.com/dkarter/lnr/compare/v2.1.0...v2.2.0) (2026-07-24)
 
 
