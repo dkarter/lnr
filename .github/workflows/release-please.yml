@@ -36,8 +36,25 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v5
+      - name: Generate release app token
+        id: release_app_token
+        # actions/create-github-app-token v3.2.0 is an immutable release tag; verify immutability before updating:
+        # https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Release Please
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
+        with:
+          # Use a GitHub App token instead of GITHUB_TOKEN so the release PR
+          # can trigger downstream workflows.
+          token: ${{ steps.release_app_token.outputs.token }}
 
       # Build and upload binaries if a release was created
       - name: Checkout
