@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/dkarter/lnr/compare/v3.0.0...v3.0.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **release:** correct GoReleaser configuration ([6bea302](https://github.com/dkarter/lnr/commit/6bea3029e022e619acd06ec68c26c6517eae65ec))
+
 ## [3.0.0](https://github.com/dkarter/lnr/compare/v2.2.0...v3.0.0) (2026-07-26)
 
 
