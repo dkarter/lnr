@@ -52,9 +52,9 @@ func stubCommandHandlers(executions *int) commandHandlers {
 			return "Prompted title", nil
 		},
 		checkoutReady: func() error { run(); return nil },
-		quick:         func(string, string, bool, bool) { run() },
+		quick:         func(string, string, BranchOutputOptions) { run() },
 		create:        func(string, IssueCreateOptions) { run() },
-		issue:         func(string, string, bool) { run() },
+		issue:         func(string, string, BranchOutputOptions) { run() },
 		form:          run,
 		login:         run,
 		logout:        run,
@@ -264,8 +264,8 @@ func TestLegacyRootFlags(t *testing.T) {
 		var jsonOutput bool
 		handlers := stubCommandHandlers(new(int))
 		handlers.authHeader = func() string { return "legacy-auth" }
-		handlers.quick = func(gotAuth, gotTitle string, gotJSON, _ bool) {
-			auth, title, jsonOutput = gotAuth, gotTitle, gotJSON
+		handlers.quick = func(gotAuth, gotTitle string, output BranchOutputOptions) {
+			auth, title, jsonOutput = gotAuth, gotTitle, output.JSON
 		}
 
 		_, err := executeCommand(t, handlers, "--json", "--quick", "Fix the thing")
@@ -282,8 +282,8 @@ func TestLegacyRootFlags(t *testing.T) {
 		var jsonOutput bool
 		handlers := stubCommandHandlers(new(int))
 		handlers.authHeader = func() string { return "legacy-auth" }
-		handlers.quick = func(_ string, gotTitle string, gotJSON, _ bool) {
-			title, jsonOutput = gotTitle, gotJSON
+		handlers.quick = func(_ string, gotTitle string, output BranchOutputOptions) {
+			title, jsonOutput = gotTitle, output.JSON
 		}
 
 		_, err := executeCommand(t, handlers, "--json", "quick", "Fix", "the", "thing")
@@ -328,8 +328,8 @@ func TestQuickAndIssueParsing(t *testing.T) {
 			var jsonOutput bool
 			handlers := stubCommandHandlers(new(int))
 			handlers.authHeader = func() string { return "auth" }
-			handlers.quick = func(_ string, value string, json, _ bool) { text, jsonOutput = value, json }
-			handlers.issue = func(_ string, value string, json bool) { text, jsonOutput = value, json }
+			handlers.quick = func(_ string, value string, output BranchOutputOptions) { text, jsonOutput = value, output.JSON }
+			handlers.issue = func(_ string, value string, output BranchOutputOptions) { text, jsonOutput = value, output.JSON }
 			_, err := executeCommand(t, handlers, tt.args...)
 			if err != nil {
 				t.Fatal(err)
@@ -350,7 +350,7 @@ func TestQuickPromptsForMissingTitle(t *testing.T) {
 		prompts++
 		return "Fix the prompted thing", nil
 	}
-	handlers.quick = func(_ string, value string, _, _ bool) { title = value }
+	handlers.quick = func(_ string, value string, _ BranchOutputOptions) { title = value }
 
 	_, err := executeCommand(t, handlers, "quick")
 	if err != nil {
@@ -364,13 +364,26 @@ func TestQuickPromptsForMissingTitle(t *testing.T) {
 	}
 }
 
+func TestQuickPromptCancellationDoesNotPrintUsage(t *testing.T) {
+	handlers := stubCommandHandlers(new(int))
+	handlers.promptTitle = func() (string, error) { return "", fmt.Errorf("user aborted") }
+
+	output, err := executeCommand(t, handlers, "quick")
+	if err == nil || err.Error() != "user aborted" {
+		t.Fatalf("expected cancellation error, got %v", err)
+	}
+	if output != "" {
+		t.Fatalf("expected no usage output, got:\n%s", output)
+	}
+}
+
 func TestQuickCheckout(t *testing.T) {
 	var title string
 	var checkout bool
 	handlers := stubCommandHandlers(new(int))
 	handlers.authHeader = func() string { return "auth" }
-	handlers.quick = func(_ string, value string, _ bool, gotCheckout bool) {
-		title, checkout = value, gotCheckout
+	handlers.quick = func(_ string, value string, output BranchOutputOptions) {
+		title, checkout = value, output.Checkout
 	}
 
 	_, err := executeCommand(t, handlers, "quick", "-c", "Fix", "the", "thing")
@@ -387,8 +400,8 @@ func TestQuickCheckoutHonorsFlagDelimiter(t *testing.T) {
 	var checkout bool
 	handlers := stubCommandHandlers(new(int))
 	handlers.authHeader = func() string { return "auth" }
-	handlers.quick = func(_ string, value string, _ bool, gotCheckout bool) {
-		title, checkout = value, gotCheckout
+	handlers.quick = func(_ string, value string, output BranchOutputOptions) {
+		title, checkout = value, output.Checkout
 	}
 
 	_, err := executeCommand(t, handlers, "quick", "--", "Document", "--checkout", "behavior")
@@ -422,6 +435,60 @@ func TestQuickRejectsCheckoutWithJSON(t *testing.T) {
 	}
 	if executions != 0 {
 		t.Fatalf("flag conflict executed %d handlers", executions)
+	}
+}
+
+func TestBranchOutputFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "quick copy", args: []string{"quick", "--copy=true", "Fix it"}},
+		{name: "create checkout", args: []string{"issue", "create", "-c", "--title", "Fix it"}},
+		{name: "create alias checkout", args: []string{"ic", "--checkout", "--title", "Fix it"}},
+		{name: "search checkout", args: []string{"issue", "search", "--checkout=true", "Fix it"}},
+		{name: "search alias copy", args: []string{"is", "--copy", "Fix it"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output BranchOutputOptions
+			handlers := stubCommandHandlers(new(int))
+			handlers.authHeader = func() string { return "auth" }
+			handlers.checkoutReady = func() error { return nil }
+			handlers.quick = func(_ string, _ string, got BranchOutputOptions) { output = got }
+			handlers.create = func(_ string, got IssueCreateOptions) { output = got.BranchOutputOptions }
+			handlers.issue = func(_ string, _ string, got BranchOutputOptions) { output = got }
+
+			if _, err := executeCommand(t, handlers, tt.args...); err != nil {
+				t.Fatal(err)
+			}
+			wantCopy := strings.Contains(tt.name, "copy")
+			wantCheckout := strings.Contains(tt.name, "checkout")
+			if output.Copy != wantCopy || output.Checkout != wantCheckout {
+				t.Fatalf("unexpected output options: %+v", output)
+			}
+		})
+	}
+}
+
+func TestBranchOutputFlagsAreMutuallyExclusive(t *testing.T) {
+	commands := [][]string{
+		{"quick", "--copy", "--checkout", "Fix it"},
+		{"issue", "create", "--json", "--copy", "--title", "Fix it"},
+		{"issue", "search", "--json", "--checkout", "Fix it"},
+	}
+	for _, args := range commands {
+		t.Run(strings.Join(args[:2], "_"), func(t *testing.T) {
+			executions := 0
+			_, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+			if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+				t.Fatalf("expected conflicting flag error, got %v", err)
+			}
+			if executions != 0 {
+				t.Fatalf("flag conflict executed %d handlers", executions)
+			}
+		})
 	}
 }
 
@@ -549,7 +616,7 @@ func TestRootJSONReachesNestedIssueCommands(t *testing.T) {
 		var jsonOutput bool
 		handlers := stubCommandHandlers(new(int))
 		handlers.authHeader = func() string { return "auth" }
-		handlers.issue = func(_ string, _ string, json bool) { jsonOutput = json }
+		handlers.issue = func(_ string, _ string, output BranchOutputOptions) { jsonOutput = output.JSON }
 		_, err := executeCommand(t, handlers, "--json", "issue", "search", "deployment")
 		if err != nil {
 			t.Fatal(err)
@@ -578,7 +645,7 @@ func TestQuickPreservesFlagLikeTitleWords(t *testing.T) {
 	var title string
 	handlers := stubCommandHandlers(new(int))
 	handlers.authHeader = func() string { return "auth" }
-	handlers.quick = func(_ string, value string, _, _ bool) { title = value }
+	handlers.quick = func(_ string, value string, _ BranchOutputOptions) { title = value }
 
 	_, err := executeCommand(t, handlers, "quick", "Fix", "--not-a-flag")
 	if err != nil {
@@ -655,18 +722,6 @@ func TestFindBestIssueNoMatch(t *testing.T) {
 	_, found := findBestIssue(issues, "zzz")
 	if found {
 		t.Fatal("did not expect issue match")
-	}
-}
-
-func TestFallbackIssueBranchName(t *testing.T) {
-	issue := Issue{Identifier: "PLT-123", BranchName: "plt-123-fix-the-thing"}
-	if branchName := fallbackIssueBranchName(issue); branchName != "plt-123-fix-the-thing" {
-		t.Fatalf("expected branch name %q, got %q", "plt-123-fix-the-thing", branchName)
-	}
-
-	issue = Issue{Identifier: "PLT-123"}
-	if branchName := fallbackIssueBranchName(issue); branchName != "plt-123" {
-		t.Fatalf("expected branch name %q, got %q", "plt-123", branchName)
 	}
 }
 

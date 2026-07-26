@@ -36,13 +36,6 @@ type LinearTicket struct {
 	StatusId    string
 }
 
-type CreatedIssue struct {
-	Identifier string `json:"issueId"`
-	BranchName string `json:"branchName"`
-	Title      string `json:"title"`
-	URL        string `json:"url"`
-}
-
 type Issue struct {
 	Identifier string `json:"issueId"`
 	BranchName string `json:"branchName"`
@@ -50,11 +43,18 @@ type Issue struct {
 	URL        string `json:"url"`
 }
 
+type CreatedIssue = Issue
+
 type IssueCreateOptions struct {
 	Title       string
 	Description string
-	JSON        bool
-	Checkout    bool
+	BranchOutputOptions
+}
+
+type BranchOutputOptions struct {
+	JSON     bool
+	Copy     bool
+	Checkout bool
 }
 
 type UserSelections struct {
@@ -1720,8 +1720,8 @@ func runSetStatus(apiKey string) {
 	fmt.Println("✅ Default status saved")
 }
 
-func runQuickCreate(apiKey, title string, jsonOutput, checkout bool) {
-	runIssueCreate(apiKey, IssueCreateOptions{Title: title, JSON: jsonOutput, Checkout: checkout})
+func runQuickCreate(apiKey, title string, output BranchOutputOptions) {
+	runIssueCreate(apiKey, IssueCreateOptions{Title: title, BranchOutputOptions: output})
 }
 
 func runIssueCreate(apiKey string, options IssueCreateOptions) {
@@ -1754,15 +1754,7 @@ func runIssueCreate(apiKey string, options IssueCreateOptions) {
 		os.Exit(1)
 	}
 
-	if options.Checkout {
-		if err := checkoutBranch(fallbackBranchName(issue)); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Failed to create and check out branch: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	outputCreatedIssue(issue, options.JSON)
+	outputIssueResult(issue, options.BranchOutputOptions)
 }
 
 func checkoutBranch(branchName string) error {
@@ -1785,10 +1777,17 @@ func checkGitWorktree() error {
 	return nil
 }
 
-func outputCreatedIssue(issue CreatedIssue, jsonOutput bool) {
+func outputIssueResult(issue Issue, options BranchOutputOptions) {
 	branchName := fallbackBranchName(issue)
 	issue.BranchName = branchName
-	if jsonOutput {
+	if options.Checkout {
+		if err := checkoutBranch(branchName); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to create and check out branch: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if options.JSON {
 		jsonData, err := json.Marshal(issue)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to encode JSON: %v\n", err)
@@ -1799,10 +1798,11 @@ func outputCreatedIssue(issue CreatedIssue, jsonOutput bool) {
 		return
 	}
 
-	if err := clipboard.WriteAll(branchName); err != nil {
-		fmt.Println(branchName)
-		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
-		return
+	if options.Copy {
+		if err := clipboard.WriteAll(branchName); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println(branchName)
@@ -1814,14 +1814,6 @@ func runConfigure(apiKey string) {
 	runSetLabels(apiKey)
 	runSetEstimate()
 	runSetStatus(apiKey)
-}
-
-func fallbackIssueBranchName(issue Issue) string {
-	if issue.BranchName != "" {
-		return issue.BranchName
-	}
-
-	return strings.ToLower(issue.Identifier)
 }
 
 func issueSearchScore(issue Issue, term string) int {
@@ -1878,30 +1870,7 @@ func findBestIssue(issues []Issue, term string) (Issue, bool) {
 	return bestIssue, bestScore > 0
 }
 
-func outputIssue(issue Issue, jsonOutput bool) {
-	branchName := fallbackIssueBranchName(issue)
-	issue.BranchName = branchName
-	if jsonOutput {
-		jsonData, err := json.Marshal(issue)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Failed to encode JSON: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Println(string(jsonData))
-		return
-	}
-
-	if err := clipboard.WriteAll(branchName); err != nil {
-		fmt.Println(branchName)
-		fmt.Fprintf(os.Stderr, "❌ Failed to copy to clipboard: %v\n", err)
-		return
-	}
-
-	fmt.Println(branchName)
-}
-
-func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
+func runIssueSearch(apiKey, searchTerm string, output BranchOutputOptions) {
 	selections := loadUserSelections()
 	teamId := requireDefaultTeam(selections)
 
@@ -1921,7 +1890,7 @@ func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
 			os.Exit(1)
 		}
 
-		outputIssue(issue, jsonOutput)
+		outputIssueResult(issue, output)
 		return
 	}
 
@@ -1951,7 +1920,7 @@ func runIssueSearch(apiKey, searchTerm string, jsonOutput bool) {
 	}
 
 	issue := issueByKey[selectedIssueKey]
-	outputIssue(issue, jsonOutput)
+	outputIssueResult(issue, output)
 }
 
 func printSkill(w io.Writer) {
@@ -1970,20 +1939,7 @@ func hasHelpArg(args []string) bool {
 	return false
 }
 
-func parseLegacyArgs(args []string) (string, bool) {
-	var parts []string
-	jsonOutput := false
-	for _, arg := range args {
-		if arg == "--json" {
-			jsonOutput = true
-		} else {
-			parts = append(parts, arg)
-		}
-	}
-	return strings.Join(parts, " "), jsonOutput
-}
-
-func parseQuickArgs(args []string) (title string, jsonOutput, checkout bool) {
+func parseBranchArgs(args []string) (text string, output BranchOutputOptions, err error) {
 	var parts []string
 	flags := true
 	for _, arg := range args {
@@ -1995,25 +1951,69 @@ func parseQuickArgs(args []string) (title string, jsonOutput, checkout bool) {
 			parts = append(parts, arg)
 			continue
 		}
+		if name, value, found := strings.Cut(arg, "="); found {
+			var target *bool
+			switch name {
+			case "--json":
+				target = &output.JSON
+			case "--copy":
+				target = &output.Copy
+			case "--checkout", "-c":
+				target = &output.Checkout
+			}
+			if target != nil {
+				parsed, parseErr := strconv.ParseBool(value)
+				if parseErr != nil {
+					return "", BranchOutputOptions{}, fmt.Errorf("invalid value %q for %s", value, name)
+				}
+				*target = parsed
+				continue
+			}
+		}
 		switch arg {
 		case "--json":
-			jsonOutput = true
+			output.JSON = true
+		case "--copy":
+			output.Copy = true
 		case "--checkout", "-c":
-			checkout = true
+			output.Checkout = true
 		default:
 			parts = append(parts, arg)
 		}
 	}
-	return strings.Join(parts, " "), jsonOutput, checkout
+	return strings.Join(parts, " "), output, nil
+}
+
+func validateBranchOutputOptions(options BranchOutputOptions) error {
+	selected := 0
+	for _, enabled := range []bool{options.JSON, options.Copy, options.Checkout} {
+		if enabled {
+			selected++
+		}
+	}
+	if selected > 1 {
+		return fmt.Errorf("--json, --copy, and --checkout cannot be used together")
+	}
+	return nil
+}
+
+func prepareBranchOutput(options BranchOutputOptions, checkoutReady func() error) error {
+	if err := validateBranchOutputOptions(options); err != nil {
+		return err
+	}
+	if options.Checkout {
+		return checkoutReady()
+	}
+	return nil
 }
 
 type commandHandlers struct {
 	authHeader    func() string
 	promptTitle   func() (string, error)
 	checkoutReady func() error
-	quick         func(string, string, bool, bool)
+	quick         func(string, string, BranchOutputOptions)
 	create        func(string, IssueCreateOptions)
-	issue         func(string, string, bool)
+	issue         func(string, string, BranchOutputOptions)
 	form          func()
 	login         func()
 	logout        func()
@@ -2109,12 +2109,13 @@ interactively when it needs a description, assignee, or per-issue choices.`,
   lnr issue create`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case clearCache:
 				return runReset(cmd, handlers.reset)
 			case quickTitle != "":
-				handlers.quick(handlers.authHeader(), quickTitle, rootJSON, false)
+				handlers.quick(handlers.authHeader(), quickTitle, BranchOutputOptions{JSON: rootJSON})
 				return nil
 			default:
 				return cmd.Help()
@@ -2131,7 +2132,7 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 	quickCmd := &cobra.Command{
 		Use:                "quick [flags] [TITLE]",
 		Short:              "Create an issue from a title using saved defaults",
-		Long:               "Create an issue from a title using saved defaults. Prompts for the title when omitted. Prints and copies the Linear branch name by default.",
+		Long:               "Create an issue from a title using saved defaults. Prompts for the title when omitted. Prints the Linear branch name by default.",
 		DisableFlagParsing: true,
 		Example: `  lnr quick
   lnr quick "Fix flaky deployment check"
@@ -2141,15 +2142,13 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 			if hasHelpArg(args) {
 				return cmd.Help()
 			}
-			title, commandJSON, checkout := parseQuickArgs(args)
-			jsonOutput := rootJSON || commandJSON
-			if jsonOutput && checkout {
-				return fmt.Errorf("--json and --checkout cannot be used together")
+			title, output, err := parseBranchArgs(args)
+			if err != nil {
+				return err
 			}
-			if checkout {
-				if err := handlers.checkoutReady(); err != nil {
-					return err
-				}
+			output.JSON = output.JSON || rootJSON
+			if err := prepareBranchOutput(output, handlers.checkoutReady); err != nil {
+				return err
 			}
 			if title == "" {
 				var err error
@@ -2158,12 +2157,13 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 					return err
 				}
 			}
-			handlers.quick(handlers.authHeader(), title, jsonOutput, checkout)
+			handlers.quick(handlers.authHeader(), title, output)
 			return nil
 		},
 	}
 	quickCmd.Flags().Bool("json", false, "Output the created issue as JSON")
-	quickCmd.Flags().BoolP("checkout", "c", false, "Create and check out the Linear branch")
+	quickCmd.Flags().Bool("copy", false, "Copy the Linear git branch to the clipboard")
+	quickCmd.Flags().BoolP("checkout", "c", false, "Create and check out the Linear git branch")
 
 	issueCmd := &cobra.Command{
 		Use:   "issue",
@@ -2291,10 +2291,10 @@ func newIssueCreateCommand(use, short string, rootJSON *bool, handlers commandHa
 		Short: short,
 		Long: `Create a Linear issue using configured defaults for team, labels, estimate,
 status, and assignee. With no creation flags, opens the interactive workflow.
-Non-interactive creation prints and copies the Linear branch name by default.`,
+Non-interactive creation prints the Linear branch name by default.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			nonInteractive := options.Title != "" || options.Description != "" || options.JSON || *rootJSON
+			nonInteractive := options.Title != "" || options.Description != "" || options.JSON || options.Copy || options.Checkout || *rootJSON
 			if !nonInteractive {
 				handlers.form()
 				return nil
@@ -2303,6 +2303,9 @@ Non-interactive creation prints and copies the Linear branch name by default.`,
 				return fmt.Errorf("--title is required for non-interactive creation")
 			}
 			options.JSON = options.JSON || *rootJSON
+			if err := prepareBranchOutput(options.BranchOutputOptions, handlers.checkoutReady); err != nil {
+				return err
+			}
 			handlers.create(handlers.authHeader(), options)
 			return nil
 		},
@@ -2310,6 +2313,8 @@ Non-interactive creation prints and copies the Linear branch name by default.`,
 	cmd.Flags().StringVar(&options.Title, "title", "", "Issue title for non-interactive creation")
 	cmd.Flags().StringVar(&options.Description, "description", "", "Issue description for non-interactive creation")
 	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the created issue as JSON")
+	cmd.Flags().BoolVar(&options.Copy, "copy", false, "Copy the Linear git branch to the clipboard")
+	cmd.Flags().BoolVarP(&options.Checkout, "checkout", "c", false, "Create and check out the Linear git branch")
 	return cmd
 }
 
@@ -2317,19 +2322,28 @@ func newIssueSearchCommand(use, short, example string, rootJSON *bool, handlers 
 	cmd := &cobra.Command{
 		Use:                use,
 		Short:              short,
-		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker. Prints and copies the Linear branch name by default.",
+		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker. Prints the Linear branch name by default.",
 		Example:            example,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpArg(args) {
 				return cmd.Help()
 			}
-			searchTerm, commandJSON := parseLegacyArgs(args)
-			handlers.issue(handlers.authHeader(), searchTerm, *rootJSON || commandJSON)
+			searchTerm, output, err := parseBranchArgs(args)
+			if err != nil {
+				return err
+			}
+			output.JSON = output.JSON || *rootJSON
+			if err := prepareBranchOutput(output, handlers.checkoutReady); err != nil {
+				return err
+			}
+			handlers.issue(handlers.authHeader(), searchTerm, output)
 			return nil
 		},
 	}
 	cmd.Flags().Bool("json", false, "Output the selected issue as JSON")
+	cmd.Flags().Bool("copy", false, "Copy the Linear git branch to the clipboard")
+	cmd.Flags().BoolP("checkout", "c", false, "Create and check out the Linear git branch")
 	return cmd
 }
 

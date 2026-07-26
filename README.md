@@ -115,8 +115,8 @@ lnr issue create
 lnr ic # Short alias
 ```
 
-Create non-interactively with configured defaults. This prints and copies the
-Linear branch name by default:
+Create non-interactively with configured defaults. This prints the Linear git
+branch name by default:
 
 ```bash
 lnr issue create --title "Fix flaky deployment check" \
@@ -142,7 +142,7 @@ lnr config set-estimate
 lnr config set-status
 ```
 
-Create an issue from only a title and print/copy Linear's branch name:
+Create an issue from only a title and print its Linear git branch name:
 
 ```bash
 lnr quick
@@ -152,21 +152,28 @@ lnr --quick "Fix flaky deployment check"
 
 When the title is omitted, `lnr quick` prompts for it interactively.
 
-Create the issue and immediately check out its Linear branch without printing or
-copying the branch name:
+Create the issue and immediately check out its Linear git branch:
 
 ```bash
 lnr quick --checkout "Fix flaky deployment check"
 lnr quick -c
+lnr issue create -c --title "Fix flaky deployment check"
 ```
 
-Return JSON instead of copying the branch name:
+Copy a branch name to the clipboard only when requested:
+
+```bash
+lnr quick --copy "Fix flaky deployment check"
+lnr issue search --copy "deployment check"
+```
+
+Return JSON:
 
 ```bash
 lnr quick --json "Fix flaky deployment check"
 ```
 
-Fuzzy find a recent issue in the default team and print/copy its branch name:
+Fuzzy find a recent issue in the default team and print its branch name:
 
 ```bash
 lnr issue search
@@ -178,7 +185,14 @@ Return JSON for the selected issue:
 lnr issue search --json
 ```
 
-Search non-interactively and print/copy the best match:
+Find an issue and check out its Linear git branch:
+
+```bash
+lnr issue search --checkout "deployment check"
+lnr is -c "deployment check"
+```
+
+Search non-interactively and print the best match:
 
 ```bash
 lnr issue search "deployment check"

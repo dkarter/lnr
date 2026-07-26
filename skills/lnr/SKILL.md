@@ -23,13 +23,15 @@ lnr issue create --json --title "Fix flaky deployment check" \
   --description "The deployment check fails intermittently."
 ```
 
-Create a ticket and immediately check out its Linear branch:
+Create a ticket and immediately check out its Linear git branch:
 
 ```bash
 lnr quick --checkout "Fix flaky deployment check"
 # Short form:
 lnr quick -c "Fix flaky deployment check"
+lnr issue create -c --title "Fix flaky deployment check" \
+  --description "The deployment check fails intermittently."
 ```
 
 Always provide `--title` to `issue create` and a title argument to `quick`.
-Never combine `--json` with `--checkout`.
+Never combine `--json`, `--copy`, or `--checkout` with each other.
