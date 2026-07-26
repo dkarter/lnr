@@ -33,7 +33,7 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
+    formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -44,7 +44,7 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - README.md
       - LICENSE*
@@ -81,7 +81,3 @@ source:
 release:
   draft: true
   use_existing_draft: true
-
-# Announce the release
-announce:
-  skip: '{{ if ne (len .Changelog) 0 }}false{{ else }}true{{ end }}'
