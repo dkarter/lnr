@@ -81,7 +81,7 @@ jobs:
       - name: Attest release artifacts
         if: ${{ steps.release.outputs.release_created }}
         # v4.2.0 is an immutable GitHub release.
-        uses: actions/attest@v4.2.0
+        uses: actions/attest@v4.2.2
         with:
           subject-path: |
             dist/*.tar.gz
