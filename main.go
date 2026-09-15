@@ -195,7 +195,8 @@ type MCPIssue struct {
 	Description   string `json:"description"`
 	URL           string `json:"url"`
 	GitBranchName string `json:"gitBranchName"`
-	Team          *Team  `json:"team"`
+	Team          string `json:"team"`
+	TeamID        string `json:"teamId"`
 }
 
 func getCacheDir() string {
@@ -1930,7 +1931,8 @@ func fetchIssue(apiKey, identifier string) (MCPIssue, error) {
 		GitBranchName: getString(raw, "branchName"),
 	}
 	if rawTeam, ok := raw["team"].(map[string]interface{}); ok {
-		issue.Team = &Team{ID: getString(rawTeam, "id"), Name: getString(rawTeam, "name")}
+		issue.Team = getString(rawTeam, "name")
+		issue.TeamID = getString(rawTeam, "id")
 	}
 	return issue, nil
 }
@@ -1945,8 +1947,8 @@ func updateIssue(apiKey string, options IssueUpdateOptions) (Issue, error) {
 		return Issue{}, fmt.Errorf("fetch issue %s: %w", options.Identifier, err)
 	}
 	teamID := ""
-	if current.Team != nil {
-		teamID = current.Team.ID
+	if current.TeamID != "" {
+		teamID = current.TeamID
 	}
 	if options.TeamChanged {
 		teams, err := loadTeams(apiKey)
@@ -2057,6 +2059,9 @@ func updateIssue(apiKey string, options IssueUpdateOptions) (Issue, error) {
 }
 
 func deleteIssue(apiKey, identifier string) error {
+	if _, ok := splitMCPAuthHeader(apiKey); ok {
+		return fmt.Errorf("Linear OAuth does not support issue deletion; set LINEAR_API_KEY and retry")
+	}
 	current, err := fetchIssue(apiKey, identifier)
 	if err != nil {
 		return fmt.Errorf("fetch issue %s: %w", identifier, err)
@@ -2064,12 +2069,8 @@ func deleteIssue(apiKey, identifier string) error {
 	if current.UUID == "" {
 		return fmt.Errorf("Linear did not return the internal ID for %s", identifier)
 	}
-	authHeader := apiKey
-	if mcpHeader, ok := splitMCPAuthHeader(apiKey); ok {
-		authHeader = mcpHeader
-	}
 	mutation := `mutation IssueDelete($id: String!) { issueDelete(id: $id) { success } }`
-	result, err := makeLinearRequest(authHeader, mutation, map[string]interface{}{"id": current.UUID})
+	result, err := makeLinearRequest(apiKey, mutation, map[string]interface{}{"id": current.UUID})
 	if err != nil {
 		return err
 	}
@@ -2788,7 +2789,7 @@ func newIssueDeleteCommand(rootJSON *bool, handlers commandHandlers) *cobra.Comm
 	cmd := &cobra.Command{
 		Use:   "delete ISSUE",
 		Short: "Delete a Linear issue",
-		Long:  "Permanently delete a Linear issue. Prompts for confirmation unless --force is provided.",
+		Long:  "Permanently delete a Linear issue using LINEAR_API_KEY. Prompts for confirmation unless --force is provided.",
 		Example: `  lnr issue delete PLT-123
   lnr issue delete PLT-123 --force --json`,
 		Args: cobra.ExactArgs(1),
