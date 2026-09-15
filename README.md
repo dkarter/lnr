@@ -1,4 +1,10 @@
-# Linear Ticket Form
+# lnr
+
+<p align="center">
+  <img src="website/public/favicon.svg" width="96" height="96" alt="lnr logo">
+</p>
+
+**Linear issues at terminal speed.**
 
 A beautiful TUI form for creating Linear tickets from the command line, perfect for Herdr or tmux popup panes.
 

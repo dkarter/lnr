@@ -1,0 +1,118 @@
+---
+import { codeToHtml } from "shiki";
+import Logo from "../components/Logo.astro";
+import VersionSelect from "../components/VersionSelect.astro";
+import "../styles/site.css";
+
+const base = `${import.meta.env.BASE_URL.replace(/[/]$/, "")}/`;
+const path = (value: string) => `${base}${value.replace(/^[/]/, "")}`;
+const example = await codeToHtml(
+  `lnr issue create \\\n+  --title "Ship the docs" \\\n+  --project "CLI"\n# plt-842-ship-the-docs`,
+  { lang: "bash", theme: "github-dark-default" },
+);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content="Create, find, and manage Linear issues without leaving the terminal." />
+    <meta name="theme-color" content="#171717" />
+    <meta property="og:title" content="lnr: Linear issues at terminal speed." />
+    <meta property="og:description" content="A fast, focused CLI for turning intent into tracked work." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://lnr.doriankarter.com/" />
+    <meta property="og:image" content="https://lnr.doriankarter.com/og-image.svg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="https://lnr.doriankarter.com/" />
+    <link rel="icon" href={path("/favicon.svg")} />
+    <title>lnr: Linear issues at terminal speed.</title>
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="nav shell">
+      <a class="brand" href={path("/")} aria-label="lnr home"><Logo size={34} /><strong>lnr</strong></a>
+      <nav aria-label="Main navigation">
+        <a href={path("/docs/")}>Docs</a>
+        <a href="https://github.com/dkarter/lnr">GitHub</a>
+        <VersionSelect />
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero shell">
+        <div class="hero-copy">
+          <p class="kicker"><span></span> Linear, minus the context switch</p>
+          <h1>Issues move<br /><em>at terminal speed.</em></h1>
+          <p class="lede">
+            Create, find, update, and ship Linear work from the place you are already working.
+            Interactive when you want it. Scriptable when you do not.
+          </p>
+          <div class="actions">
+            <a class="primary" href={path("/docs/quick-start/")}>Start in 60 seconds <span>↗</span></a>
+            <a href={path("/docs/")}>Read the docs</a>
+          </div>
+        </div>
+
+        <div class="terminal hero-demo" aria-label="Terminal demonstration of lnr creating a Linear issue">
+          <div class="terminal-bar"><span><i></i><i></i><i></i></span><b>lnr · zsh</b></div>
+          <div class="terminal-body">
+            <p class="terminal-command"><span class="prompt">❯</span> lnr quick <strong>"Ship the docs"</strong></p>
+            <div class="result-line">
+              <span>✓</span>
+              <div><small>ISSUE CREATED</small><b>PLT-842 · Ship the docs</b></div>
+            </div>
+            <div class="branch-output"><small>BRANCH</small><code>plt-842-ship-the-docs</code></div>
+            <p class="cursor"><span class="prompt">❯</span><i></i></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="ticker" aria-label="Product capabilities">
+        <div>CREATE <span>◆</span> SEARCH <span>◆</span> UPDATE <span>◆</span> DELETE <span>◆</span> CHECKOUT <span>◆</span> JSON</div>
+      </section>
+
+      <section class="thesis shell">
+        <p class="section-label">The idea</p>
+        <h2>Tracking work should take <em>less work.</em></h2>
+        <p>lnr turns a title into a Linear issue and a ready-to-use branch name. No browser archaeology. No ceremony. No giant SDK in your script.</p>
+      </section>
+
+      <section class="features shell">
+        <article><span>01 / HUMAN</span><h3>A polished TUI.</h3><p>Pick teams, projects, labels, estimates, and status with keyboard-first forms and paginated search.</p><code>lnr issue create</code></article>
+        <article><span>02 / FAST</span><h3>One line in, one branch out.</h3><p>Saved defaults make the common path tiny. Create the issue and immediately check out its branch.</p><code>lnr quick -c "Fix it"</code></article>
+        <article><span>03 / MACHINE</span><h3>Built for automation.</h3><p>Explicit flags and stable JSON let shell scripts and coding agents use the same workflow without prompts.</p><code>lnr issue search --json "docs"</code></article>
+      </section>
+
+      <section class="workflow shell">
+        <div class="workflow-copy">
+          <p class="section-label">One tool, full loop</p>
+          <h2>From thought<br />to <em>tracked.</em></h2>
+          <p>Search remotely as you type. Update the issue when the plan changes. Clear a project deliberately. Delete with confirmation.</p>
+          <a href={path("/docs/cli-reference/")}>Explore every command ↗</a>
+        </div>
+        <div class="command-list">
+          <div><span>01</span><code>lnr quick "Add OAuth"</code><b>create</b></div>
+          <div><span>02</span><code>lnr is "OAuth"</code><b>find</b></div>
+          <div><span>03</span><code>lnr issue update PLT-42 --status Done</code><b>change</b></div>
+          <div><span>04</span><code>lnr issue delete PLT-42</code><b>remove</b></div>
+        </div>
+      </section>
+
+      <section class="code-callout shell">
+        <div><p class="section-label">Composable by default</p><h2>Good output is an interface.</h2><p>Print a branch name for your shell, structured data for an agent, or create and check out the branch in one move.</p></div>
+        <Fragment set:html={example} />
+      </section>
+
+      <section class="closing shell">
+        <Logo size={58} />
+        <h2>Less tracking.<br /><em>More shipping.</em></h2>
+        <p>Install the latest release with mise.</p>
+        <code>mise use -g github:dkarter/lnr</code>
+      </section>
+    </main>
+
+    <footer class="shell"><a class="brand" href={path("/")}><Logo size={28} /><strong>lnr</strong></a><span>Linear issues at terminal speed.</span><div><a href={path("/docs/")}>Docs</a><a href="https://github.com/dkarter/lnr">GitHub</a></div></footer>
+  </body>
+</html>

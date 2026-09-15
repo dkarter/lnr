@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#171717"/><path d="M0 520h1200M0 420h1200M0 320h1200M0 220h1200M200 0v630M400 0v630M600 0v630M800 0v630M1000 0v630" stroke="#302d2b"/>
+  <rect x="82" y="86" width="116" height="116" rx="25" fill="#1d1c1b" stroke="#514b47" stroke-width="4"/><path d="M114 114v48c0 8 6 14 14 14h40m-15-18 18 18-18 18" fill="none" stroke="#ff6b4a" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><circle cx="114" cy="114" r="8" fill="#fff7e8"/>
+  <text x="82" y="330" fill="#fff7e8" font-family="Arial,sans-serif" font-size="108" font-weight="700" letter-spacing="-7">Linear issues</text><text x="82" y="438" fill="#ff6b4a" font-family="Arial,sans-serif" font-size="108" font-weight="700" letter-spacing="-7">at terminal speed.</text><text x="88" y="526" fill="#a89e94" font-family="monospace" font-size="28">lnr · create / find / update / ship</text>
+</svg>

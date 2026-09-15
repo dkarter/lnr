@@ -1,0 +1,8 @@
+---
+import Logo from "../components/Logo.astro";
+import "../styles/site.css";
+const base = `${import.meta.env.BASE_URL.replace(/[/]$/, "")}/`;
+---
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width" /><meta name="robots" content="noindex" /><title>Issue not found · lnr</title><link rel="icon" href={`${base}favicon.svg`} /></head>
+<body class="not-found"><main><Logo size={54} /><p class="section-label">404 · no match</p><h1>Issue not found.</h1><p>The identifier may have changed. The docs are still here.</p><div class="actions"><a class="primary" href={`${base}docs/`}>Open docs</a><a href={base}>Return home</a></div></main></body></html>

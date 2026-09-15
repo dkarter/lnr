@@ -1,0 +1,53 @@
+---
+const stableVersion = import.meta.env.PUBLIC_LNR_STABLE_VERSION;
+const currentVersion = import.meta.env.PUBLIC_LNR_DOCS_VERSION;
+const stableRoutes = import.meta.env.PUBLIC_LNR_STABLE_ROUTES.split("|").filter(Boolean);
+const hasStableDocs = import.meta.env.PUBLIC_LNR_HAS_STABLE_DOCS !== "false";
+const currentPath = Astro.url.pathname;
+const stablePath = currentPath.startsWith("/dev/") ? currentPath.slice(4) : currentPath;
+const fallback = stablePath.startsWith("/docs/") ? "/docs/" : "/";
+const stableTarget = stableRoutes.length === 0 || stableRoutes.includes(stablePath)
+  ? stablePath
+  : fallback;
+const devTarget = `/dev${stablePath}`;
+---
+
+<lnr-version-select>
+  <label>
+    <span>Docs version</span>
+    <select aria-label="Documentation version">
+      {hasStableDocs && <option value={stableTarget} selected={currentVersion !== "dev"}>v{stableVersion}</option>}
+      <option value={hasStableDocs ? devTarget : currentPath} selected={currentVersion === "dev"}>dev</option>
+    </select>
+  </label>
+</lnr-version-select>
+
+<script>
+class LnrVersionSelect extends HTMLElement {
+  constructor() {
+    super();
+    this.querySelector("select")?.addEventListener("change", (event) => {
+      window.location.href = (event.currentTarget as HTMLSelectElement).value;
+    });
+  }
+}
+if (!customElements.get("lnr-version-select")) {
+  customElements.define("lnr-version-select", LnrVersionSelect);
+}
+</script>
+
+<style>
+label { display: flex; align-items: center; gap: 0.55rem; }
+label > span { font: 600 0.65rem var(--mono, monospace); color: var(--muted, #887f78); text-transform: uppercase; letter-spacing: 0.08em; }
+select {
+  min-height: 2rem;
+  padding: 0.25rem 1.7rem 0.25rem 0.55rem;
+  border: 1px solid var(--sl-color-hairline-light, #47423f);
+  border-radius: 999px;
+  color: var(--sl-color-text, #fff7e8);
+  background: var(--sl-color-bg-nav, #171717);
+  font: 700 0.75rem var(--mono, monospace);
+}
+select:focus-visible { outline: 2px solid var(--sl-color-accent, #ff6b4a); outline-offset: 2px; }
+@media (max-width: 680px) { label > span { display: none; } }
+</style>
