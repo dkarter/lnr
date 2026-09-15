@@ -3,14 +3,14 @@ module linear-ticket-form
 go 1.25.8
 
 require (
+	charm.land/bubbles/v2 v2.0.0
+	charm.land/bubbletea/v2 v2.0.2
 	charm.land/huh/v2 v2.0.3
 	github.com/atotto/clipboard v0.1.4
 	github.com/spf13/cobra v1.10.2
 )
 
 require (
-	charm.land/bubbles/v2 v2.0.0 // indirect
-	charm.land/bubbletea/v2 v2.0.2 // indirect
 	charm.land/lipgloss/v2 v2.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
@@ -30,6 +30,7 @@ require (
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sahilm/fuzzy v0.1.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.19.0 // indirect
