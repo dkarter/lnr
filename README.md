@@ -147,6 +147,10 @@ lnr issue delete PLT-123
 lnr issue delete PLT-123 --force --json
 ```
 
+Linear's hosted OAuth service does not expose issue deletion. Set
+`LINEAR_API_KEY` to use `issue delete`; other issue commands support either
+browser login or a personal API key.
+
 ### Quick usage:
 
 Configure the defaults used by quick commands:

@@ -746,7 +746,7 @@ func TestUpdateIssueValidatesRelationshipsAndSendsMutation(t *testing.T) {
 		}
 		switch body.Params.Name {
 		case "get_issue":
-			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", UUID: "uuid-123", Title: "Old", Team: &Team{ID: "old-team", Name: "Old"}})
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", UUID: "uuid-123", Title: "Old", Team: "Old", TeamID: "old-team"})
 		case "list_teams":
 			mcpResponse(t, writer, MCPPage[Team]{Teams: []Team{{ID: "team-1", Name: "Platform"}}})
 		case "list_issue_statuses":
@@ -787,7 +787,7 @@ func TestUpdateIssueRejectsProjectOutsideTeam(t *testing.T) {
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		if body.Params.Name == "get_issue" {
-			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", Team: &Team{ID: "team-1"}})
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", TeamID: "team-1"})
 			return
 		}
 		mcpResponse(t, writer, MCPPage[Project]{})
@@ -813,7 +813,7 @@ func TestUpdateIssueRejectsStatusOutsideTeam(t *testing.T) {
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		if body.Params.Name == "get_issue" {
-			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", Team: &Team{ID: "team-1"}})
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", TeamID: "team-1"})
 			return
 		}
 		mcpResponse(t, writer, []WorkflowState{})
@@ -827,28 +827,35 @@ func TestUpdateIssueRejectsStatusOutsideTeam(t *testing.T) {
 	}
 }
 
+func TestDeleteIssueRequiresAPIKeyForMCPLogin(t *testing.T) {
+	err := deleteIssue(mcpAuthHeader("token"), "PLT-123")
+	if err == nil || !strings.Contains(err.Error(), "set LINEAR_API_KEY") {
+		t.Fatalf("expected actionable authentication error, got %v", err)
+	}
+}
+
 func TestDeleteIssueUsesResolvedIDAndPropagatesFailure(t *testing.T) {
-	oldResource := linearOAuthResource
 	oldGraphQL := linearGraphQLEndpoint
 	t.Cleanup(func() {
-		linearOAuthResource = oldResource
 		linearGraphQLEndpoint = oldGraphQL
 	})
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		mcpResponse(t, writer, MCPIssue{ID: "PLT-123", UUID: "uuid-123"})
-	}))
-	defer mcpServer.Close()
-	linearOAuthResource = mcpServer.URL
 
 	fail := false
 	graphqlServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if got := request.Header.Get("Authorization"); got != "Bearer token" {
+		if got := request.Header.Get("Authorization"); got != "api-key" {
 			t.Errorf("unexpected authorization header %q", got)
 		}
 		var body struct {
+			Query     string                 `json:"query"`
 			Variables map[string]interface{} `json:"variables"`
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
+		if strings.Contains(body.Query, "query Issue") {
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"data": map[string]interface{}{"issue": map[string]interface{}{"id": "uuid-123", "identifier": "PLT-123"}},
+			})
+			return
+		}
 		if body.Variables["id"] != "uuid-123" {
 			t.Errorf("expected resolved issue ID, got %+v", body.Variables)
 		}
@@ -861,11 +868,11 @@ func TestDeleteIssueUsesResolvedIDAndPropagatesFailure(t *testing.T) {
 	defer graphqlServer.Close()
 	linearGraphQLEndpoint = graphqlServer.URL
 
-	if err := deleteIssue(mcpAuthHeader("token"), "PLT-123"); err != nil {
+	if err := deleteIssue("api-key", "PLT-123"); err != nil {
 		t.Fatalf("expected successful deletion, got %v", err)
 	}
 	fail = true
-	err := deleteIssue(mcpAuthHeader("token"), "PLT-123")
+	err := deleteIssue("api-key", "PLT-123")
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("expected Linear API failure, got %v", err)
 	}
