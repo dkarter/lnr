@@ -1,0 +1,14 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap");
+
+:root {
+  --brand-ink: #171717;
+  --brand-ink-soft: #22201f;
+  --brand-paper: #fff7e8;
+  --brand-paper-dim: #e5daca;
+  --brand-coral: #ff6b4a;
+  --brand-lime: #c9f36a;
+  --brand-line: #47423f;
+  --brand-muted: #a89e94;
+  --brand-sans: Manrope, sans-serif;
+  --brand-mono: "DM Mono", monospace;
+}

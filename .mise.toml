@@ -76,6 +76,20 @@ echo "=================="
 go version
 """
 
+[tasks.website-dev]
+description = "Start the documentation website"
+run = "aube --dir website run dev"
+
+[tasks.website-build]
+description = "Typecheck and build the documentation website"
+run = "aube --dir website install --frozen-lockfile && aube --dir website run build"
+
+[tasks.website-versioned]
+description = "Build stable and development documentation"
+run = "aube --dir website install --frozen-lockfile && ./scripts/build-versioned-website.sh"
+
 [tools]
+aube = "2.2.12"
 go = "1.26.5"
 goreleaser = "2"
+node = "24"

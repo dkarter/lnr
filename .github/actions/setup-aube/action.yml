@@ -1,0 +1,11 @@
+name: Set up aube
+description: Install the repository's pinned aube release
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl -fsSLo /tmp/aube.tar.gz https://github.com/jdx/aube/releases/download/v2.2.12/aube-v2.2.12-x86_64-unknown-linux-gnu.tar.gz
+        echo 'ad906bced7d1bf014a2dd8cfa1b03ad0e38a5764f92fe4b30e9e27e303bb7a03  /tmp/aube.tar.gz' | sha256sum -c -
+        tar -xzf /tmp/aube.tar.gz -C /tmp
+        sudo install /tmp/aube /usr/local/bin/aube

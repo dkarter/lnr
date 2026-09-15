@@ -1,0 +1,45 @@
+---
+interface Props {
+  size?: number;
+  label?: string;
+}
+
+const { size = 32, label } = Astro.props;
+---
+
+<svg
+  class="lnr-logo"
+  width={size}
+  height={size}
+  viewBox="0 0 64 64"
+  role={label ? "img" : undefined}
+  aria-label={label}
+  aria-hidden={label ? undefined : "true"}
+>
+  <rect x="3" y="3" width="58" height="58" rx="13" fill="currentColor" class="logo-shell" />
+  <path d="M19 17v24c0 4 3 7 7 7h19" class="logo-route" />
+  <path d="m38 39 9 9-9 9" class="logo-route" />
+  <circle cx="19" cy="17" r="4" class="logo-node" />
+</svg>
+
+<style>
+.lnr-logo {
+  display: block;
+  overflow: visible;
+}
+.logo-shell {
+  color: var(--logo-shell, #171717);
+  stroke: var(--logo-border, #47423f);
+  stroke-width: 2;
+}
+.logo-route {
+  fill: none;
+  stroke: var(--logo-accent, #ff6b4a);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.logo-node {
+  fill: var(--logo-paper, #fff7e8);
+}
+</style>

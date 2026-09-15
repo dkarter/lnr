@@ -1,0 +1,36 @@
+---
+title: lnr documentation
+description: Create, find, and manage Linear issues without leaving the terminal.
+template: splash
+hero:
+  tagline: Linear issues at terminal speed. Interactive for people, predictable for scripts and agents.
+  actions:
+    - text: Quick start
+      link: /docs/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: Install
+      link: /docs/install/
+      icon: download
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid>
+  <Card title="Create" icon="add-document">Turn a title into an issue and a branch name with saved defaults.</Card>
+  <Card title="Find" icon="magnifier">Search Linear remotely with a fast, paginated keyboard picker.</Card>
+  <Card title="Manage" icon="setting">Update title, description, team, status, and project, or safely delete an issue.</Card>
+  <Card title="Automate" icon="laptop">Use explicit flags and structured JSON without accidental prompts.</Card>
+</CardGrid>
+
+## The shortest path
+
+```sh
+mise use -g github:dkarter/lnr
+lnr config
+lnr quick "Fix flaky deployment check"
+```
+
+The final command creates the issue and prints its Linear branch name.
+
+[Learn every `lnr quick` output mode →](/docs/quick/)
