@@ -120,9 +120,31 @@ branch name by default:
 
 ```bash
 lnr issue create --title "Fix flaky deployment check" \
-  --description "The deployment check fails intermittently."
+  --description "The deployment check fails intermittently." \
+  --project "Release readiness"
 lnr ic --json --title "Fix flaky deployment check" \
   --description "The deployment check fails intermittently."
+```
+
+The interactive workflow includes an optional project picker. `--project`
+accepts a project name or ID and validates that the project belongs to the
+selected team.
+
+Update an existing issue. Omitted fields remain unchanged, while
+`--no-project` explicitly removes the current project:
+
+```bash
+lnr issue update PLT-123 --title "Updated title" --description "New details"
+lnr issue update PLT-123 --team Platform --status Done --project "Release readiness"
+lnr issue update PLT-123 --no-project --json
+```
+
+Delete an issue with interactive confirmation, or use `--force` for
+non-interactive use. JSON mode requires `--force` and never prompts:
+
+```bash
+lnr issue delete PLT-123
+lnr issue delete PLT-123 --force --json
 ```
 
 ### Quick usage:

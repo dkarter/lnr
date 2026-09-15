@@ -34,6 +34,7 @@ type LinearTicket struct {
 	TeamId      string
 	AssigneeId  string
 	StatusId    string
+	ProjectId   string
 }
 
 type Issue struct {
@@ -48,7 +49,30 @@ type CreatedIssue = Issue
 type IssueCreateOptions struct {
 	Title       string
 	Description string
+	Project     string
 	BranchOutputOptions
+}
+
+type IssueUpdateOptions struct {
+	Identifier         string
+	Title              string
+	Description        string
+	Team               string
+	Status             string
+	Project            string
+	TitleChanged       bool
+	DescriptionChanged bool
+	TeamChanged        bool
+	StatusChanged      bool
+	ProjectChanged     bool
+	ClearProject       bool
+	JSON               bool
+}
+
+type IssueDeleteOptions struct {
+	Identifier string
+	Force      bool
+	JSON       bool
 }
 
 type BranchOutputOptions struct {
@@ -80,6 +104,11 @@ type Team struct {
 	Name string `json:"name"`
 }
 
+type Project struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type User struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -105,6 +134,7 @@ var linearOAuthAuthorizeURL = "https://mcp.linear.app/authorize"
 var linearOAuthRegistrationURL = "https://mcp.linear.app/register"
 var linearOAuthResource = "https://mcp.linear.app/mcp"
 var linearOAuthTokenURL = "https://mcp.linear.app/token"
+var linearGraphQLEndpoint = "https://api.linear.app/graphql"
 
 //go:embed skills/lnr/SKILL.md
 var lnrSkill string
@@ -153,15 +183,19 @@ type MCPPage[T any] struct {
 	Labels      []T    `json:"labels"`
 	Users       []T    `json:"users"`
 	Issues      []T    `json:"issues"`
+	Projects    []T    `json:"projects"`
 	HasNextPage bool   `json:"hasNextPage"`
 	Cursor      string `json:"cursor"`
 }
 
 type MCPIssue struct {
 	ID            string `json:"id"`
+	UUID          string `json:"uuid"`
 	Title         string `json:"title"`
+	Description   string `json:"description"`
 	URL           string `json:"url"`
 	GitBranchName string `json:"gitBranchName"`
+	Team          *Team  `json:"team"`
 }
 
 func getCacheDir() string {
@@ -885,6 +919,30 @@ func fetchMCPWorkflowStates(authHeader, teamID string) ([]WorkflowState, error) 
 	return states, nil
 }
 
+func fetchMCPTeamProjects(authHeader, teamID string) ([]Project, error) {
+	var projects []Project
+	var cursor string
+	for {
+		arguments := map[string]interface{}{"team": teamID, "limit": 50}
+		if cursor != "" {
+			arguments["cursor"] = cursor
+		}
+		data, err := callMCPTool(authHeader, "list_projects", arguments)
+		if err != nil {
+			return nil, err
+		}
+		var page MCPPage[Project]
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, err
+		}
+		projects = append(projects, page.Projects...)
+		if !page.HasNextPage || page.Cursor == "" {
+			return projects, nil
+		}
+		cursor = page.Cursor
+	}
+}
+
 func fetchMCPTeamIssues(authHeader, teamID string) ([]Issue, error) {
 	var issueList []Issue
 	var cursor string
@@ -904,12 +962,7 @@ func fetchMCPTeamIssues(authHeader, teamID string) ([]Issue, error) {
 			return nil, err
 		}
 		for _, issue := range page.Issues {
-			issueList = append(issueList, Issue{
-				Identifier: issue.ID,
-				BranchName: issue.GitBranchName,
-				Title:      issue.Title,
-				URL:        issue.URL,
-			})
+			issueList = append(issueList, issueFromMCP(issue))
 		}
 		if !page.HasNextPage || page.Cursor == "" {
 			break
@@ -941,6 +994,9 @@ func createLinearTicketWithMCP(authHeader string, ticket LinearTicket) (CreatedI
 	}
 	if ticket.StatusId != "" {
 		arguments["state"] = ticket.StatusId
+	}
+	if ticket.ProjectId != "" {
+		arguments["project"] = ticket.ProjectId
 	}
 
 	data, err := callMCPTool(authHeader, "save_issue", arguments)
@@ -1019,7 +1075,7 @@ func makeLinearRequest(apiKey, query string, variables map[string]interface{}) (
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", "https://api.linear.app/graphql", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", linearGraphQLEndpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -1347,6 +1403,65 @@ func fetchWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
 	return stateList, nil
 }
 
+func fetchTeamProjects(apiKey, teamId string) ([]Project, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		return fetchMCPTeamProjects(authHeader, teamId)
+	}
+
+	var projects []Project
+	var after string
+	for {
+		query := `
+		query TeamProjects($teamId: String!, $after: String) {
+			team(id: $teamId) {
+				projects(first: 50, after: $after) {
+					nodes { id name }
+					pageInfo { hasNextPage endCursor }
+				}
+			}
+		}`
+		variables := map[string]interface{}{"teamId": teamId}
+		if after != "" {
+			variables["after"] = after
+		}
+		result, err := makeLinearRequest(apiKey, query, variables)
+		if err != nil {
+			return nil, err
+		}
+		data, ok := result["data"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Linear API response did not include data")
+		}
+		team, ok := data["team"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("team %q was not found", teamId)
+		}
+		connection, ok := team["projects"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Linear API response did not include team projects")
+		}
+		nodes, ok := connection["nodes"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Linear API response did not include project results")
+		}
+		for _, raw := range nodes {
+			project, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("Linear API returned an invalid project")
+			}
+			projects = append(projects, Project{ID: getString(project, "id"), Name: getString(project, "name")})
+		}
+		pageInfo, ok := connection["pageInfo"].(map[string]interface{})
+		if !ok || pageInfo["hasNextPage"] != true {
+			return projects, nil
+		}
+		after = getString(pageInfo, "endCursor")
+		if after == "" {
+			return projects, nil
+		}
+	}
+}
+
 func loadTeams(apiKey string) ([]Team, error) {
 	if teams, found := loadTypedFromCache[[]Team]("teams", noCacheExpiration); found {
 		return teams, nil
@@ -1401,6 +1516,18 @@ func loadWorkflowStates(apiKey, teamId string) ([]WorkflowState, error) {
 	saveToCache("states-"+teamId, states)
 
 	return states, nil
+}
+
+func loadTeamProjects(apiKey, teamId string) ([]Project, error) {
+	if projects, found := loadTypedFromCache[[]Project]("projects-"+teamId, noCacheExpiration); found {
+		return projects, nil
+	}
+	projects, err := fetchTeamProjects(apiKey, teamId)
+	if err != nil {
+		return nil, err
+	}
+	saveToCache("projects-"+teamId, projects)
+	return projects, nil
 }
 
 func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
@@ -1514,6 +1641,48 @@ func teamOptions(teams []Team) []huh.Option[string] {
 	}
 
 	return options
+}
+
+func projectOptions(projects []Project, includeNone bool) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(projects)+1)
+	if includeNone {
+		options = append(options, huh.Option[string]{Key: "No project", Value: ""})
+	}
+	for _, project := range projects {
+		options = append(options, huh.Option[string]{Key: project.Name, Value: project.ID})
+	}
+	return options
+}
+
+func findNamed[T interface{ Team | Project | WorkflowState }](items []T, value string, idAndName func(T) (string, string)) (string, bool) {
+	for _, item := range items {
+		id, name := idAndName(item)
+		if value == id || strings.EqualFold(value, name) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func findProject(projects []Project, value string) (string, error) {
+	for _, project := range projects {
+		if project.ID == value {
+			return project.ID, nil
+		}
+	}
+	projectID := ""
+	for _, project := range projects {
+		if strings.EqualFold(project.Name, value) {
+			if projectID != "" {
+				return "", fmt.Errorf("project name %q is ambiguous; use a project ID", value)
+			}
+			projectID = project.ID
+		}
+	}
+	if projectID == "" {
+		return "", fmt.Errorf("project %q is not available to the target team", value)
+	}
+	return projectID, nil
 }
 
 func labelOptions(labels []Label) ([]huh.Option[string], map[string]string) {
@@ -1724,6 +1893,239 @@ func runQuickCreate(apiKey, title string, output BranchOutputOptions) {
 	runIssueCreate(apiKey, IssueCreateOptions{Title: title, BranchOutputOptions: output})
 }
 
+func fetchIssue(apiKey, identifier string) (MCPIssue, error) {
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		data, err := callMCPTool(authHeader, "get_issue", map[string]interface{}{"id": identifier})
+		if err != nil {
+			return MCPIssue{}, err
+		}
+		var issue MCPIssue
+		if err := json.Unmarshal(data, &issue); err != nil {
+			return MCPIssue{}, err
+		}
+		return issue, nil
+	}
+
+	query := `query Issue($id: String!) {
+		issue(id: $id) { id identifier title description url branchName team { id name } }
+	}`
+	result, err := makeLinearRequest(apiKey, query, map[string]interface{}{"id": identifier})
+	if err != nil {
+		return MCPIssue{}, err
+	}
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return MCPIssue{}, fmt.Errorf("Linear API response did not include data")
+	}
+	raw, ok := data["issue"].(map[string]interface{})
+	if !ok {
+		return MCPIssue{}, fmt.Errorf("issue %q was not found", identifier)
+	}
+	issue := MCPIssue{
+		ID:            getString(raw, "identifier"),
+		UUID:          getString(raw, "id"),
+		Title:         getString(raw, "title"),
+		Description:   getString(raw, "description"),
+		URL:           getString(raw, "url"),
+		GitBranchName: getString(raw, "branchName"),
+	}
+	if rawTeam, ok := raw["team"].(map[string]interface{}); ok {
+		issue.Team = &Team{ID: getString(rawTeam, "id"), Name: getString(rawTeam, "name")}
+	}
+	return issue, nil
+}
+
+func issueFromMCP(issue MCPIssue) Issue {
+	return Issue{Identifier: issue.ID, BranchName: issue.GitBranchName, Title: issue.Title, URL: issue.URL}
+}
+
+func updateIssue(apiKey string, options IssueUpdateOptions) (Issue, error) {
+	current, err := fetchIssue(apiKey, options.Identifier)
+	if err != nil {
+		return Issue{}, fmt.Errorf("fetch issue %s: %w", options.Identifier, err)
+	}
+	teamID := ""
+	if current.Team != nil {
+		teamID = current.Team.ID
+	}
+	if options.TeamChanged {
+		teams, err := loadTeams(apiKey)
+		if err != nil {
+			return Issue{}, fmt.Errorf("fetch teams: %w", err)
+		}
+		var found bool
+		teamID, found = findNamed(teams, options.Team, func(team Team) (string, string) { return team.ID, team.Name })
+		if !found {
+			return Issue{}, fmt.Errorf("team %q was not found; use a team name or ID from `lnr config set-team`", options.Team)
+		}
+	}
+	if teamID == "" && (options.StatusChanged || (options.ProjectChanged && !options.ClearProject)) {
+		return Issue{}, fmt.Errorf("Linear did not return the issue team; specify --team to validate status or project")
+	}
+
+	statusID := ""
+	if options.StatusChanged {
+		states, err := loadWorkflowStates(apiKey, teamID)
+		if err != nil {
+			return Issue{}, fmt.Errorf("fetch statuses for team: %w", err)
+		}
+		var found bool
+		statusID, found = findNamed(states, options.Status, func(state WorkflowState) (string, string) { return state.ID, state.Name })
+		if !found {
+			return Issue{}, fmt.Errorf("status %q is not available to the target team", options.Status)
+		}
+	}
+	projectID := ""
+	if options.ProjectChanged && !options.ClearProject {
+		projects, err := loadTeamProjects(apiKey, teamID)
+		if err != nil {
+			return Issue{}, fmt.Errorf("fetch projects for team: %w", err)
+		}
+		projectID, err = findProject(projects, options.Project)
+		if err != nil {
+			return Issue{}, err
+		}
+	}
+
+	input := map[string]interface{}{}
+	if options.TitleChanged {
+		input["title"] = strings.TrimSpace(options.Title)
+	}
+	if options.DescriptionChanged {
+		input["description"] = options.Description
+	}
+	if options.TeamChanged {
+		input["team"] = teamID
+	}
+	if options.StatusChanged {
+		input["state"] = statusID
+	}
+	if options.ProjectChanged {
+		if options.ClearProject {
+			input["project"] = nil
+		} else {
+			input["project"] = projectID
+		}
+	}
+
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		input["id"] = options.Identifier
+		data, err := callMCPTool(authHeader, "save_issue", input)
+		if err != nil {
+			return Issue{}, err
+		}
+		var updated MCPIssue
+		if err := json.Unmarshal(data, &updated); err != nil {
+			return Issue{}, err
+		}
+		return issueFromMCP(updated), nil
+	}
+
+	graphqlInput := map[string]interface{}{}
+	for key, value := range input {
+		switch key {
+		case "team":
+			graphqlInput["teamId"] = value
+		case "state":
+			graphqlInput["stateId"] = value
+		case "project":
+			graphqlInput["projectId"] = value
+		default:
+			graphqlInput[key] = value
+		}
+	}
+	mutation := `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+		issueUpdate(id: $id, input: $input) { issue { identifier title branchName url } }
+	}`
+	result, err := makeLinearRequest(apiKey, mutation, map[string]interface{}{"id": current.UUID, "input": graphqlInput})
+	if err != nil {
+		return Issue{}, err
+	}
+	resultData, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return Issue{}, fmt.Errorf("Linear API response did not include update data")
+	}
+	issueUpdate, ok := resultData["issueUpdate"].(map[string]interface{})
+	if !ok {
+		return Issue{}, fmt.Errorf("Linear API response did not include update result")
+	}
+	data, ok := issueUpdate["issue"].(map[string]interface{})
+	if !ok {
+		return Issue{}, fmt.Errorf("Linear API response did not include updated issue")
+	}
+	return Issue{Identifier: getString(data, "identifier"), Title: getString(data, "title"), BranchName: getString(data, "branchName"), URL: getString(data, "url")}, nil
+}
+
+func deleteIssue(apiKey, identifier string) error {
+	current, err := fetchIssue(apiKey, identifier)
+	if err != nil {
+		return fmt.Errorf("fetch issue %s: %w", identifier, err)
+	}
+	if current.UUID == "" {
+		return fmt.Errorf("Linear did not return the internal ID for %s", identifier)
+	}
+	authHeader := apiKey
+	if mcpHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		authHeader = mcpHeader
+	}
+	mutation := `mutation IssueDelete($id: String!) { issueDelete(id: $id) { success } }`
+	result, err := makeLinearRequest(authHeader, mutation, map[string]interface{}{"id": current.UUID})
+	if err != nil {
+		return err
+	}
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("Linear API response did not include deletion result")
+	}
+	deleted, ok := data["issueDelete"].(map[string]interface{})
+	if !ok || deleted["success"] != true {
+		return fmt.Errorf("Linear did not confirm deletion of %s", identifier)
+	}
+	return nil
+}
+
+func confirmIssueDelete(identifier string) (bool, error) {
+	confirmed := false
+	err := huh.NewConfirm().
+		Title("Delete " + identifier + "?").
+		Description("This permanently deletes the Linear issue.").
+		Affirmative("Delete").
+		Negative("Cancel").
+		Value(&confirmed).
+		Run()
+	return confirmed, err
+}
+
+func runIssueUpdate(apiKey string, options IssueUpdateOptions) error {
+	issue, err := updateIssue(apiKey, options)
+	if err != nil {
+		return fmt.Errorf("update issue: %w", err)
+	}
+	if options.JSON {
+		data, err := json.Marshal(issue)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("Updated %s\n", issue.Identifier)
+	}
+	return nil
+}
+
+func runIssueDelete(apiKey string, options IssueDeleteOptions) error {
+	if err := deleteIssue(apiKey, options.Identifier); err != nil {
+		return fmt.Errorf("delete issue: %w", err)
+	}
+	if options.JSON {
+		data, _ := json.Marshal(map[string]interface{}{"deleted": true, "issueId": options.Identifier})
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("Deleted %s\n", options.Identifier)
+	}
+	return nil
+}
+
 func runIssueCreate(apiKey string, options IssueCreateOptions) {
 	title := strings.TrimSpace(options.Title)
 	if title == "" {
@@ -1739,6 +2141,19 @@ func runIssueCreate(apiKey string, options IssueCreateOptions) {
 		os.Exit(1)
 	}
 	_, labelMap := labelOptions(labels)
+	projectID := ""
+	if options.Project != "" {
+		projects, err := loadTeamProjects(apiKey, teamId)
+		if err != nil {
+			fmt.Printf("❌ Error fetching projects: %v\n", err)
+			os.Exit(1)
+		}
+		projectID, err = findProject(projects, options.Project)
+		if err != nil {
+			fmt.Printf("❌ %v; choose one shown in the interactive form\n", err)
+			os.Exit(1)
+		}
+	}
 
 	issue, err := createLinearTicket(apiKey, LinearTicket{
 		Title:       title,
@@ -1748,6 +2163,7 @@ func runIssueCreate(apiKey string, options IssueCreateOptions) {
 		Estimate:    selections.Estimate,
 		AssigneeId:  selections.AssigneeId,
 		StatusId:    selections.StatusId,
+		ProjectId:   projectID,
 	}, labelMap)
 	if err != nil {
 		fmt.Printf("❌ Error creating ticket: %v\n", err)
@@ -2014,6 +2430,9 @@ type commandHandlers struct {
 	quick         func(string, string, BranchOutputOptions)
 	create        func(string, IssueCreateOptions)
 	issue         func(string, string, BranchOutputOptions)
+	update        func(string, IssueUpdateOptions) error
+	delete        func(string, IssueDeleteOptions) error
+	confirmDelete func(string) (bool, error)
 	form          func()
 	login         func()
 	logout        func()
@@ -2034,6 +2453,9 @@ func defaultCommandHandlers() commandHandlers {
 		quick:         runQuickCreate,
 		create:        runIssueCreate,
 		issue:         runIssueSearch,
+		update:        runIssueUpdate,
+		delete:        runIssueDelete,
+		confirmDelete: confirmIssueDelete,
 		form:          runForm,
 		login:         runAuthLogin,
 		logout:        runAuthLogout,
@@ -2092,9 +2514,9 @@ func newRootCommand(handlers commandHandlers) *cobra.Command {
 
 	root := &cobra.Command{
 		Use:     "lnr",
-		Short:   "Create and find Linear issues from the terminal",
+		Short:   "Manage Linear issues from the terminal",
 		Version: version,
-		Long: `lnr is a focused Linear CLI for creating issues, finding existing work,
+		Long: `lnr is a focused Linear CLI for creating, finding, updating, and deleting issues,
 and printing branch names for humans and coding agents.
 
 Use quick commands with saved defaults for automation, or create an issue
@@ -2188,6 +2610,8 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 		&rootJSON,
 		handlers,
 	))
+	issueCmd.AddCommand(newIssueUpdateCommand(&rootJSON, handlers))
+	issueCmd.AddCommand(newIssueDeleteCommand(&rootJSON, handlers))
 	issueSearchAliasCmd := newIssueSearchCommand(
 		"is [flags] [SEARCH]",
 		`Search issues (alias for "lnr issue search")`,
@@ -2294,7 +2718,7 @@ status, and assignee. With no creation flags, opens the interactive workflow.
 Non-interactive creation prints the Linear branch name by default.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			nonInteractive := options.Title != "" || options.Description != "" || options.JSON || options.Copy || options.Checkout || *rootJSON
+			nonInteractive := options.Title != "" || options.Description != "" || options.Project != "" || options.JSON || options.Copy || options.Checkout || *rootJSON
 			if !nonInteractive {
 				handlers.form()
 				return nil
@@ -2312,9 +2736,83 @@ Non-interactive creation prints the Linear branch name by default.`,
 	}
 	cmd.Flags().StringVar(&options.Title, "title", "", "Issue title for non-interactive creation")
 	cmd.Flags().StringVar(&options.Description, "description", "", "Issue description for non-interactive creation")
+	cmd.Flags().StringVar(&options.Project, "project", "", "Project name or ID (must belong to the selected team)")
 	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the created issue as JSON")
 	cmd.Flags().BoolVar(&options.Copy, "copy", false, "Copy the Linear git branch to the clipboard")
 	cmd.Flags().BoolVarP(&options.Checkout, "checkout", "c", false, "Create and check out the Linear git branch")
+	return cmd
+}
+
+func newIssueUpdateCommand(rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	var options IssueUpdateOptions
+	cmd := &cobra.Command{
+		Use:   "update ISSUE",
+		Short: "Update a Linear issue",
+		Long:  "Update an issue title, description, team, status, or project. Values may be names or IDs. Omitted fields are left unchanged.",
+		Example: `  lnr issue update PLT-123 --status Done
+  lnr issue update PLT-123 --team Platform --project "CLI"
+  lnr issue update PLT-123 --no-project --json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			options.Identifier = args[0]
+			options.TitleChanged = cmd.Flags().Changed("title")
+			options.DescriptionChanged = cmd.Flags().Changed("description")
+			options.TeamChanged = cmd.Flags().Changed("team")
+			options.StatusChanged = cmd.Flags().Changed("status")
+			options.ProjectChanged = cmd.Flags().Changed("project") || options.ClearProject
+			options.JSON = options.JSON || *rootJSON
+			if !options.TitleChanged && !options.DescriptionChanged && !options.TeamChanged && !options.StatusChanged && !options.ProjectChanged {
+				return fmt.Errorf("provide at least one of --title, --description, --team, --status, --project, or --no-project")
+			}
+			if options.TitleChanged && strings.TrimSpace(options.Title) == "" {
+				return fmt.Errorf("--title cannot be empty")
+			}
+			if options.ClearProject && cmd.Flags().Changed("project") {
+				return fmt.Errorf("--project and --no-project cannot be used together")
+			}
+			return handlers.update(handlers.authHeader(), options)
+		},
+	}
+	cmd.Flags().StringVar(&options.Title, "title", "", "New issue title")
+	cmd.Flags().StringVar(&options.Description, "description", "", "New issue description (empty clears it)")
+	cmd.Flags().StringVar(&options.Team, "team", "", "New team name or ID")
+	cmd.Flags().StringVar(&options.Status, "status", "", "New status name or ID for the target team")
+	cmd.Flags().StringVar(&options.Project, "project", "", "New project name or ID for the target team")
+	cmd.Flags().BoolVar(&options.ClearProject, "no-project", false, "Remove the issue from its project")
+	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the updated issue as JSON")
+	return cmd
+}
+
+func newIssueDeleteCommand(rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	var options IssueDeleteOptions
+	cmd := &cobra.Command{
+		Use:   "delete ISSUE",
+		Short: "Delete a Linear issue",
+		Long:  "Permanently delete a Linear issue. Prompts for confirmation unless --force is provided.",
+		Example: `  lnr issue delete PLT-123
+  lnr issue delete PLT-123 --force --json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			options.Identifier = args[0]
+			options.JSON = options.JSON || *rootJSON
+			if options.JSON && !options.Force {
+				return fmt.Errorf("--json requires --force to avoid an interactive prompt")
+			}
+			if !options.Force {
+				confirmed, err := handlers.confirmDelete(options.Identifier)
+				if err != nil {
+					return fmt.Errorf("confirmation cancelled: %w", err)
+				}
+				if !confirmed {
+					fmt.Fprintln(cmd.OutOrStdout(), "Deletion cancelled")
+					return nil
+				}
+			}
+			return handlers.delete(handlers.authHeader(), options)
+		},
+	}
+	cmd.Flags().BoolVarP(&options.Force, "force", "f", false, "Delete without prompting")
+	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the deletion result as JSON (requires --force)")
 	return cmd
 }
 
@@ -2487,6 +2985,7 @@ func runForm() {
 	var labels []Label
 	var users []User
 	var workflowStates []WorkflowState
+	var projects []Project
 
 	labels, err = loadTeamLabels(apiKey, selectedTeamId)
 	if err != nil {
@@ -2503,6 +3002,12 @@ func runForm() {
 	workflowStates, err = loadWorkflowStates(apiKey, selectedTeamId)
 	if err != nil {
 		fmt.Printf("❌ Error fetching workflow states: %v\n", err)
+		os.Exit(1)
+	}
+
+	projects, err = loadTeamProjects(apiKey, selectedTeamId)
+	if err != nil {
+		fmt.Printf("❌ Error fetching projects: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -2549,6 +3054,13 @@ func runForm() {
 				Description("Select the status for this ticket").
 				Options(statusOptions...).
 				Value(&ticket.StatusId),
+
+			huh.NewSelect[string]().
+				Title("Project").
+				Description("Optionally add this ticket to a project").
+				Options(projectOptions(projects, true)...).
+				Filtering(true).
+				Value(&ticket.ProjectId),
 
 			huh.NewSelect[string]().
 				Title("Estimate").
@@ -2608,6 +3120,14 @@ func runForm() {
 		}
 	}
 	fmt.Printf("Status:      %s\n", statusName)
+	projectName := "No project"
+	for _, project := range projects {
+		if project.ID == ticket.ProjectId {
+			projectName = project.Name
+			break
+		}
+	}
+	fmt.Printf("Project:     %s\n", projectName)
 
 	// Show assignee name
 	assigneeName := "No Assignee"
@@ -2755,6 +3275,9 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	if ticket.StatusId != "" {
 		input["stateId"] = ticket.StatusId
 	}
+	if ticket.ProjectId != "" {
+		input["projectId"] = ticket.ProjectId
+	}
 
 	payload := map[string]interface{}{
 		"query": mutation,
@@ -2769,7 +3292,7 @@ func createLinearTicket(apiKey string, ticket LinearTicket, labelMap map[string]
 	}
 
 	// Make the API request
-	req, err := http.NewRequest("POST", "https://api.linear.app/graphql", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", linearGraphQLEndpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return CreatedIssue{}, err
 	}

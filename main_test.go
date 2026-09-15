@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,9 @@ func stubCommandHandlers(executions *int) commandHandlers {
 		quick:         func(string, string, BranchOutputOptions) { run() },
 		create:        func(string, IssueCreateOptions) { run() },
 		issue:         func(string, string, BranchOutputOptions) { run() },
+		update:        func(string, IssueUpdateOptions) error { run(); return nil },
+		delete:        func(string, IssueDeleteOptions) error { run(); return nil },
+		confirmDelete: func(string) (bool, error) { run(); return true, nil },
 		form:          run,
 		login:         run,
 		logout:        run,
@@ -132,7 +136,7 @@ func TestRootVersion(t *testing.T) {
 
 func TestEveryCommandHelpDoesNotExecute(t *testing.T) {
 	paths := [][]string{
-		{"quick"}, {"issue"}, {"issue", "create"}, {"issue", "search"}, {"ic"}, {"is"},
+		{"quick"}, {"issue"}, {"issue", "create"}, {"issue", "search"}, {"issue", "update"}, {"issue", "delete"}, {"ic"}, {"is"},
 		{"auth"}, {"auth", "login"}, {"auth", "logout"},
 		{"config"}, {"config", "set-team"}, {"config", "set-labels"},
 		{"config", "set-estimate"}, {"config", "set-status"},
@@ -223,6 +227,10 @@ func TestCommandArgumentValidationDoesNotExecute(t *testing.T) {
 		{"issue", "create", "--description", "Missing title"},
 		{"ic", "extra"},
 		{"issue", "deployment"},
+		{"issue", "update"},
+		{"issue", "update", "PLT-123"},
+		{"issue", "delete"},
+		{"issue", "delete", "PLT-123", "--json"},
 		{"config", "set-team", "extra"},
 		{"auth", "login", "extra"},
 		{"completion"},
@@ -583,6 +591,283 @@ func TestIssueCreateNonInteractive(t *testing.T) {
 				t.Fatalf("unexpected non-interactive create values: auth=%q options=%+v", auth, options)
 			}
 		})
+	}
+}
+
+func TestIssueCreateAcceptsProject(t *testing.T) {
+	var options IssueCreateOptions
+	handlers := stubCommandHandlers(new(int))
+	handlers.create = func(_ string, got IssueCreateOptions) { options = got }
+	if _, err := executeCommand(t, handlers, "issue", "create", "--title", "Fix deployment", "--project", "Release"); err != nil {
+		t.Fatal(err)
+	}
+	if options.Project != "Release" {
+		t.Fatalf("expected project selection, got %+v", options)
+	}
+}
+
+func TestProjectOptionsIncludeNoProjectSelection(t *testing.T) {
+	options := projectOptions([]Project{{ID: "project-1", Name: "Release"}}, true)
+	if len(options) != 2 || options[0].Key != "No project" || options[0].Value != "" || options[1].Value != "project-1" {
+		t.Fatalf("unexpected project picker options: %+v", options)
+	}
+}
+
+func TestFindProjectRequiresIDForAmbiguousName(t *testing.T) {
+	projects := []Project{{ID: "project-1", Name: "Release"}, {ID: "project-2", Name: "Release"}}
+	if _, err := findProject(projects, "Release"); err == nil || !strings.Contains(err.Error(), "use a project ID") {
+		t.Fatalf("expected ambiguous project error, got %v", err)
+	}
+	if id, err := findProject(projects, "project-2"); err != nil || id != "project-2" {
+		t.Fatalf("expected exact project ID, got id=%q err=%v", id, err)
+	}
+}
+
+func TestIssueUpdateFlags(t *testing.T) {
+	var options IssueUpdateOptions
+	handlers := stubCommandHandlers(new(int))
+	handlers.update = func(_ string, got IssueUpdateOptions) error { options = got; return nil }
+	_, err := executeCommand(t, handlers, "issue", "update", "PLT-123",
+		"--title", "New title", "--description=", "--team", "Platform", "--status", "Done", "--project", "Release", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Identifier != "PLT-123" || options.Title != "New title" || options.Description != "" || options.Team != "Platform" || options.Status != "Done" || options.Project != "Release" || !options.TitleChanged || !options.DescriptionChanged || !options.TeamChanged || !options.StatusChanged || !options.ProjectChanged || !options.JSON {
+		t.Fatalf("unexpected update options: %+v", options)
+	}
+}
+
+func TestIssueUpdateProjectValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"issue", "update", "PLT-123", "--project", "Release", "--no-project"},
+		{"issue", "update", "PLT-123", "--title="},
+	} {
+		executions := 0
+		_, err := executeCommand(t, stubCommandHandlers(&executions), args...)
+		if err == nil {
+			t.Fatalf("expected validation failure for %v", args)
+		}
+		if executions != 0 {
+			t.Fatalf("validation failure executed %d handlers", executions)
+		}
+	}
+}
+
+func TestIssueUpdateClearProjectIsExplicit(t *testing.T) {
+	var options IssueUpdateOptions
+	handlers := stubCommandHandlers(new(int))
+	handlers.update = func(_ string, got IssueUpdateOptions) error { options = got; return nil }
+	if _, err := executeCommand(t, handlers, "issue", "update", "PLT-123", "--no-project"); err != nil {
+		t.Fatal(err)
+	}
+	if !options.ProjectChanged || !options.ClearProject || options.Project != "" {
+		t.Fatalf("expected explicit project clearing, got %+v", options)
+	}
+}
+
+func TestIssueDeleteConfirmation(t *testing.T) {
+	t.Run("declined", func(t *testing.T) {
+		deletes := 0
+		handlers := stubCommandHandlers(new(int))
+		handlers.confirmDelete = func(string) (bool, error) { return false, nil }
+		handlers.delete = func(string, IssueDeleteOptions) error { deletes++; return nil }
+		output, err := executeCommand(t, handlers, "issue", "delete", "PLT-123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deletes != 0 || output != "Deletion cancelled\n" {
+			t.Fatalf("unexpected cancellation: deletes=%d output=%q", deletes, output)
+		}
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		handlers := stubCommandHandlers(new(int))
+		handlers.confirmDelete = func(string) (bool, error) { return false, fmt.Errorf("user aborted") }
+		_, err := executeCommand(t, handlers, "issue", "delete", "PLT-123")
+		if err == nil || !strings.Contains(err.Error(), "confirmation cancelled") {
+			t.Fatalf("expected cancellation error, got %v", err)
+		}
+	})
+
+	t.Run("force json never prompts", func(t *testing.T) {
+		prompts := 0
+		var options IssueDeleteOptions
+		handlers := stubCommandHandlers(new(int))
+		handlers.confirmDelete = func(string) (bool, error) { prompts++; return true, nil }
+		handlers.delete = func(_ string, got IssueDeleteOptions) error { options = got; return nil }
+		if _, err := executeCommand(t, handlers, "issue", "delete", "PLT-123", "--force", "--json"); err != nil {
+			t.Fatal(err)
+		}
+		if prompts != 0 || !options.Force || !options.JSON {
+			t.Fatalf("unexpected forced deletion: prompts=%d options=%+v", prompts, options)
+		}
+	})
+}
+
+func TestIssueMutationHandlerFailure(t *testing.T) {
+	handlers := stubCommandHandlers(new(int))
+	handlers.update = func(string, IssueUpdateOptions) error { return fmt.Errorf("Linear unavailable") }
+	_, err := executeCommand(t, handlers, "issue", "update", "PLT-123", "--status", "Done")
+	if err == nil || err.Error() != "Linear unavailable" {
+		t.Fatalf("expected API failure, got %v", err)
+	}
+}
+
+func mcpResponse(t *testing.T, writer http.ResponseWriter, value interface{}) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]interface{}{
+			"content": []map[string]string{{"type": "text", "text": string(data)}},
+		},
+	})
+}
+
+func TestUpdateIssueValidatesRelationshipsAndSendsMutation(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	oldResource := linearOAuthResource
+	t.Cleanup(func() { linearOAuthResource = oldResource })
+	var saved map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Params struct {
+				Name      string                 `json:"name"`
+				Arguments map[string]interface{} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		switch body.Params.Name {
+		case "get_issue":
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", UUID: "uuid-123", Title: "Old", Team: &Team{ID: "old-team", Name: "Old"}})
+		case "list_teams":
+			mcpResponse(t, writer, MCPPage[Team]{Teams: []Team{{ID: "team-1", Name: "Platform"}}})
+		case "list_issue_statuses":
+			mcpResponse(t, writer, []WorkflowState{{ID: "status-1", Name: "Done"}})
+		case "list_projects":
+			mcpResponse(t, writer, MCPPage[Project]{Projects: []Project{{ID: "project-1", Name: "Release"}}})
+		case "save_issue":
+			saved = body.Params.Arguments
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", Title: "New"})
+		default:
+			t.Errorf("unexpected MCP tool %q", body.Params.Name)
+		}
+	}))
+	defer server.Close()
+	linearOAuthResource = server.URL
+
+	issue, err := updateIssue(mcpAuthHeader("token"), IssueUpdateOptions{
+		Identifier: "PLT-123", Title: "New", Team: "Platform", Status: "Done", Project: "Release",
+		TitleChanged: true, TeamChanged: true, StatusChanged: true, ProjectChanged: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.Identifier != "PLT-123" || saved["id"] != "PLT-123" || saved["team"] != "team-1" || saved["state"] != "status-1" || saved["project"] != "project-1" || saved["title"] != "New" {
+		t.Fatalf("unexpected saved issue or mutation: issue=%+v mutation=%+v", issue, saved)
+	}
+}
+
+func TestUpdateIssueRejectsProjectOutsideTeam(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	oldResource := linearOAuthResource
+	t.Cleanup(func() { linearOAuthResource = oldResource })
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		if body.Params.Name == "get_issue" {
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", Team: &Team{ID: "team-1"}})
+			return
+		}
+		mcpResponse(t, writer, MCPPage[Project]{})
+	}))
+	defer server.Close()
+	linearOAuthResource = server.URL
+
+	_, err := updateIssue(mcpAuthHeader("token"), IssueUpdateOptions{Identifier: "PLT-123", Project: "Other", ProjectChanged: true})
+	if err == nil || !strings.Contains(err.Error(), "not available to the target team") {
+		t.Fatalf("expected actionable project error, got %v", err)
+	}
+}
+
+func TestUpdateIssueRejectsStatusOutsideTeam(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	oldResource := linearOAuthResource
+	t.Cleanup(func() { linearOAuthResource = oldResource })
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		if body.Params.Name == "get_issue" {
+			mcpResponse(t, writer, MCPIssue{ID: "PLT-123", Team: &Team{ID: "team-1"}})
+			return
+		}
+		mcpResponse(t, writer, []WorkflowState{})
+	}))
+	defer server.Close()
+	linearOAuthResource = server.URL
+
+	_, err := updateIssue(mcpAuthHeader("token"), IssueUpdateOptions{Identifier: "PLT-123", Status: "Other", StatusChanged: true})
+	if err == nil || !strings.Contains(err.Error(), "not available to the target team") {
+		t.Fatalf("expected actionable status error, got %v", err)
+	}
+}
+
+func TestDeleteIssueUsesResolvedIDAndPropagatesFailure(t *testing.T) {
+	oldResource := linearOAuthResource
+	oldGraphQL := linearGraphQLEndpoint
+	t.Cleanup(func() {
+		linearOAuthResource = oldResource
+		linearGraphQLEndpoint = oldGraphQL
+	})
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		mcpResponse(t, writer, MCPIssue{ID: "PLT-123", UUID: "uuid-123"})
+	}))
+	defer mcpServer.Close()
+	linearOAuthResource = mcpServer.URL
+
+	fail := false
+	graphqlServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer token" {
+			t.Errorf("unexpected authorization header %q", got)
+		}
+		var body struct {
+			Variables map[string]interface{} `json:"variables"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		if body.Variables["id"] != "uuid-123" {
+			t.Errorf("expected resolved issue ID, got %+v", body.Variables)
+		}
+		if fail {
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"errors": []map[string]string{{"message": "permission denied"}}})
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{"data": map[string]interface{}{"issueDelete": map[string]interface{}{"success": true}}})
+	}))
+	defer graphqlServer.Close()
+	linearGraphQLEndpoint = graphqlServer.URL
+
+	if err := deleteIssue(mcpAuthHeader("token"), "PLT-123"); err != nil {
+		t.Fatalf("expected successful deletion, got %v", err)
+	}
+	fail = true
+	err := deleteIssue(mcpAuthHeader("token"), "PLT-123")
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected Linear API failure, got %v", err)
 	}
 }
 
