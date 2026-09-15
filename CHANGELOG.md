@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.1.0](https://github.com/dkarter/lnr/compare/v3.0.1...v3.1.0) (2026-09-15)
+
+
+### Features
+
+* expand issue management ([7ef3a87](https://github.com/dkarter/lnr/commit/7ef3a87dc2dfd10a03b4626bfaf24a944559a5f9))
+* speed up paginated issue search ([eccdf0d](https://github.com/dkarter/lnr/commit/eccdf0d73751a52e09d13fa98fdb6cc15f594988))
+
+
+### Bug Fixes
+
+* **deps:** update module charm.land/bubbletea/v2 to v2.0.9 ([#34](https://github.com/dkarter/lnr/issues/34)) ([9819413](https://github.com/dkarter/lnr/commit/98194130627d9fb96960ec3352e2fbeb49f0dcbf))
+* handle live Linear responses ([8639a1e](https://github.com/dkarter/lnr/commit/8639a1e1d03fe4be945b81156f30e015bf649c06))
+
 ## [3.0.1](https://github.com/dkarter/lnr/compare/v3.0.0...v3.0.1) (2026-07-26)
 
 
