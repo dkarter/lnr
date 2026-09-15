@@ -20,7 +20,16 @@ Create with a description:
 
 ```bash
 lnr issue create --json --title "Fix flaky deployment check" \
-  --description "The deployment check fails intermittently."
+	--description "The deployment check fails intermittently." \
+	--project "Release readiness"
+```
+
+Update or delete an issue without prompting:
+
+```bash
+lnr issue update PLT-123 --json --status Done --project "Release readiness"
+lnr issue update PLT-123 --json --no-project
+lnr issue delete PLT-123 --force --json
 ```
 
 Create a ticket and immediately check out its Linear git branch:
@@ -35,3 +44,4 @@ lnr issue create -c --title "Fix flaky deployment check" \
 
 Always provide `--title` to `issue create` and a title argument to `quick`.
 Never combine `--json`, `--copy`, or `--checkout` with each other.
+Always provide `--force` with `issue delete`.
