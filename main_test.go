@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestCLIHelper(t *testing.T) {
@@ -1015,6 +1017,141 @@ func TestFindBestIssueNoMatch(t *testing.T) {
 	if found {
 		t.Fatal("did not expect issue match")
 	}
+}
+
+func TestIssueSearchInitialPage(t *testing.T) {
+	var queries, cursors []string
+	model := newIssueSearchModel(func(query, cursor string) (IssuePage, error) {
+		queries = append(queries, query)
+		cursors = append(cursors, cursor)
+		return IssuePage{
+			Issues:      []Issue{{Identifier: "PLT-1", Title: "First issue"}},
+			HasNextPage: true,
+			EndCursor:   "page-2",
+		}, nil
+	})
+
+	msg := model.fetchPage("", model.requestID)()
+	updated, _ := model.Update(msg)
+	model = updated.(issueSearchModel)
+
+	if len(queries) != 1 || queries[0] != "" || len(cursors) != 1 || cursors[0] != "" {
+		t.Fatalf("expected one unfiltered initial request, got queries=%q cursors=%q", queries, cursors)
+	}
+	if len(model.list.Items()) != 1 || !model.hasNextPage || model.cursor != "page-2" {
+		t.Fatalf("unexpected initial page state: items=%d next=%v cursor=%q", len(model.list.Items()), model.hasNextPage, model.cursor)
+	}
+}
+
+func TestIssueSearchQueryFetchesFilteredFirstPage(t *testing.T) {
+	var query, cursor string
+	model := newIssueSearchModel(func(gotQuery, gotCursor string) (IssuePage, error) {
+		query, cursor = gotQuery, gotCursor
+		return IssuePage{Issues: []Issue{{Identifier: "PLT-2", Title: "Deployment check"}}}, nil
+	})
+	for _, char := range "deployment" {
+		updated, _ := model.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
+		model = updated.(issueSearchModel)
+	}
+
+	updated, cmd := model.Update(issueSearchDebounceMsg{requestID: model.requestID})
+	model = updated.(issueSearchModel)
+	if cmd == nil {
+		t.Fatal("expected filtered page request")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(issueSearchModel)
+
+	if query != "deployment" || cursor != "" {
+		t.Fatalf("expected filtered first page, got query=%q cursor=%q", query, cursor)
+	}
+	if len(model.list.Items()) != 1 {
+		t.Fatalf("expected one filtered result, got %d", len(model.list.Items()))
+	}
+}
+
+func TestIssueSearchAppendsSubsequentPage(t *testing.T) {
+	calls := 0
+	model := newIssueSearchModel(func(query, cursor string) (IssuePage, error) {
+		calls++
+		if cursor == "page-2" {
+			return IssuePage{Issues: []Issue{{Identifier: "PLT-2", Title: "Second"}}}, nil
+		}
+		return IssuePage{
+			Issues:      []Issue{{Identifier: "PLT-1", Title: "First"}},
+			HasNextPage: true,
+			EndCursor:   "page-2",
+		}, nil
+	})
+
+	updated, _ := model.Update(model.fetchPage("", model.requestID)())
+	model = updated.(issueSearchModel)
+	updated, _ = model.Update(model.fetchPage(model.cursor, model.requestID)())
+	model = updated.(issueSearchModel)
+
+	if calls != 2 {
+		t.Fatalf("expected two page requests, got %d", calls)
+	}
+	if len(model.list.Items()) != 2 || model.hasNextPage {
+		t.Fatalf("expected appended final page, got items=%d next=%v", len(model.list.Items()), model.hasNextPage)
+	}
+}
+
+func TestIssueSearchLoadsMoreAtEnd(t *testing.T) {
+	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+	updated, _ := model.Update(issuePageMsg{
+		requestID: model.requestID,
+		page: IssuePage{
+			Issues:      []Issue{{Identifier: "PLT-1", Title: "First"}},
+			HasNextPage: true,
+			EndCursor:   "page-2",
+		},
+	})
+	model = updated.(issueSearchModel)
+
+	updated, cmd := model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	model = updated.(issueSearchModel)
+	if cmd == nil || !model.loading {
+		t.Fatal("expected down at the end to request the next page")
+	}
+}
+
+func TestIssueSearchIgnoresStaleResponse(t *testing.T) {
+	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+	staleRequestID := model.requestID
+	model.beginSearch("new query")
+
+	updated, _ := model.Update(issuePageMsg{
+		requestID: staleRequestID,
+		page:      IssuePage{Issues: []Issue{{Identifier: "OLD-1", Title: "Stale"}}},
+	})
+	model = updated.(issueSearchModel)
+
+	if len(model.list.Items()) != 0 || !model.loading {
+		t.Fatalf("stale response changed current search state: items=%d loading=%v", len(model.list.Items()), model.loading)
+	}
+}
+
+func TestIssueSearchEmptyAndErrorStates(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+		updated, _ := model.Update(model.fetchPage("", model.requestID)())
+		model = updated.(issueSearchModel)
+		if !strings.Contains(model.View().Content, "No matching issues found") {
+			t.Fatalf("expected empty state, got %q", model.View().Content)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		model := newIssueSearchModel(func(string, string) (IssuePage, error) {
+			return IssuePage{}, fmt.Errorf("request failed")
+		})
+		updated, _ := model.Update(model.fetchPage("", model.requestID)())
+		model = updated.(issueSearchModel)
+		if !strings.Contains(model.View().Content, "Error fetching issues: request failed") {
+			t.Fatalf("expected error state, got %q", model.View().Content)
+		}
+	})
 }
 
 func TestBearerAuthHeader(t *testing.T) {

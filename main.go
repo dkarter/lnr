@@ -21,6 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/atotto/clipboard"
 	"github.com/spf13/cobra"
@@ -42,6 +45,12 @@ type Issue struct {
 	BranchName string `json:"branchName"`
 	Title      string `json:"title"`
 	URL        string `json:"url"`
+}
+
+type IssuePage struct {
+	Issues      []Issue
+	HasNextPage bool
+	EndCursor   string
 }
 
 type CreatedIssue = Issue
@@ -944,34 +953,30 @@ func fetchMCPTeamProjects(authHeader, teamID string) ([]Project, error) {
 	}
 }
 
-func fetchMCPTeamIssues(authHeader, teamID string) ([]Issue, error) {
-	var issueList []Issue
-	var cursor string
-	for {
-		arguments := map[string]interface{}{"team": teamID, "limit": 250}
-		if cursor != "" {
-			arguments["cursor"] = cursor
-		}
-
-		data, err := callMCPTool(authHeader, "list_issues", arguments)
-		if err != nil {
-			return nil, err
-		}
-
-		var page MCPPage[MCPIssue]
-		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, err
-		}
-		for _, issue := range page.Issues {
-			issueList = append(issueList, issueFromMCP(issue))
-		}
-		if !page.HasNextPage || page.Cursor == "" {
-			break
-		}
-		cursor = page.Cursor
+func fetchMCPTeamIssuePage(authHeader, teamID, searchTerm, cursor string) (IssuePage, error) {
+	arguments := map[string]interface{}{"team": teamID, "limit": 50}
+	if searchTerm != "" {
+		arguments["query"] = searchTerm
+	}
+	if cursor != "" {
+		arguments["cursor"] = cursor
 	}
 
-	return issueList, nil
+	data, err := callMCPTool(authHeader, "list_issues", arguments)
+	if err != nil {
+		return IssuePage{}, err
+	}
+
+	var page MCPPage[MCPIssue]
+	if err := json.Unmarshal(data, &page); err != nil {
+		return IssuePage{}, err
+	}
+	issues := make([]Issue, len(page.Issues))
+	for i, issue := range page.Issues {
+		issues[i] = issueFromMCP(issue)
+	}
+
+	return IssuePage{Issues: issues, HasNextPage: page.HasNextPage, EndCursor: page.Cursor}, nil
 }
 
 func createLinearTicketWithMCP(authHeader string, ticket LinearTicket) (CreatedIssue, error) {
@@ -1531,19 +1536,15 @@ func loadTeamProjects(apiKey, teamId string) ([]Project, error) {
 	return projects, nil
 }
 
-func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
+func fetchTeamIssuePage(apiKey, teamId, searchTerm, after string) (IssuePage, error) {
 	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
-		return fetchMCPTeamIssues(authHeader, teamId)
+		return fetchMCPTeamIssuePage(authHeader, teamId, searchTerm, after)
 	}
 
-	var issues []Issue
-	var after string
-
-	for len(issues) < 250 {
-		query := `
-			query TeamIssues($teamId: String!, $after: String) {
+	query := `
+			query TeamIssues($teamId: String!, $after: String, $filter: IssueFilter) {
 				team(id: $teamId) {
-					issues(first: 50, after: $after, orderBy: updatedAt) {
+					issues(first: 50, after: $after, filter: $filter, orderBy: updatedAt) {
 						nodes {
 							identifier
 							title
@@ -1559,44 +1560,71 @@ func fetchTeamIssues(apiKey, teamId string) ([]Issue, error) {
 			}
 		`
 
-		variables := map[string]interface{}{"teamId": teamId}
-		if after != "" {
-			variables["after"] = after
-		}
-
-		result, err := makeLinearRequest(apiKey, query, variables)
-		if err != nil {
-			return nil, err
-		}
-
-		data := result["data"].(map[string]interface{})
-		team := data["team"].(map[string]interface{})
-		issueConnection := team["issues"].(map[string]interface{})
-		nodes := issueConnection["nodes"].([]interface{})
-		pageInfo := issueConnection["pageInfo"].(map[string]interface{})
-
-		for _, node := range nodes {
-			issue := node.(map[string]interface{})
-			issues = append(issues, Issue{
-				Identifier: issue["identifier"].(string),
-				Title:      issue["title"].(string),
-				BranchName: getString(issue, "branchName"),
-				URL:        issue["url"].(string),
-			})
-		}
-
-		if hasNextPage := pageInfo["hasNextPage"].(bool); !hasNextPage {
-			break
-		}
-
-		if endCursor, ok := pageInfo["endCursor"].(string); ok {
-			after = endCursor
-		} else {
-			break
+	variables := map[string]interface{}{"teamId": teamId, "after": nil, "filter": nil}
+	if after != "" {
+		variables["after"] = after
+	}
+	if searchTerm != "" {
+		variables["filter"] = map[string]interface{}{
+			"or": []interface{}{
+				map[string]interface{}{"identifier": map[string]interface{}{"containsIgnoreCase": searchTerm}},
+				map[string]interface{}{"title": map[string]interface{}{"containsIgnoreCase": searchTerm}},
+			},
 		}
 	}
 
-	return issues, nil
+	result, err := makeLinearRequest(apiKey, query, variables)
+	if err != nil {
+		return IssuePage{}, err
+	}
+
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return IssuePage{}, fmt.Errorf("Linear API response did not include data")
+	}
+	team, ok := data["team"].(map[string]interface{})
+	if !ok {
+		return IssuePage{}, fmt.Errorf("Linear API response did not include the team")
+	}
+	issueConnection, ok := team["issues"].(map[string]interface{})
+	if !ok {
+		return IssuePage{}, fmt.Errorf("Linear API response did not include issues")
+	}
+	nodes, ok := issueConnection["nodes"].([]interface{})
+	if !ok {
+		return IssuePage{}, fmt.Errorf("Linear API response included invalid issues")
+	}
+	pageInfo, ok := issueConnection["pageInfo"].(map[string]interface{})
+	if !ok {
+		return IssuePage{}, fmt.Errorf("Linear API response did not include page info")
+	}
+
+	issues := make([]Issue, 0, len(nodes))
+	for _, node := range nodes {
+		issue, ok := node.(map[string]interface{})
+		if !ok {
+			return IssuePage{}, fmt.Errorf("Linear API response included an invalid issue")
+		}
+		identifier, identifierOK := issue["identifier"].(string)
+		title, titleOK := issue["title"].(string)
+		url, urlOK := issue["url"].(string)
+		if !identifierOK || !titleOK || !urlOK {
+			return IssuePage{}, fmt.Errorf("Linear API response included an incomplete issue")
+		}
+		issues = append(issues, Issue{
+			Identifier: identifier,
+			Title:      title,
+			BranchName: getString(issue, "branchName"),
+			URL:        url,
+		})
+	}
+
+	hasNextPage, _ := pageInfo["hasNextPage"].(bool)
+	return IssuePage{
+		Issues:      issues,
+		HasNextPage: hasNextPage,
+		EndCursor:   getString(pageInfo, "endCursor"),
+	}, nil
 }
 
 func getEstimateOptions(estimateType int) []huh.Option[string] {
@@ -2287,21 +2315,239 @@ func findBestIssue(issues []Issue, term string) (Issue, bool) {
 	return bestIssue, bestScore > 0
 }
 
+type issueSearchItem struct {
+	issue Issue
+}
+
+func (item issueSearchItem) Title() string       { return item.issue.Identifier + " " + item.issue.Title }
+func (item issueSearchItem) Description() string { return "" }
+func (item issueSearchItem) FilterValue() string { return item.Title() }
+
+type issuePageFetcher func(searchTerm, cursor string) (IssuePage, error)
+
+type issuePageMsg struct {
+	requestID uint64
+	cursor    string
+	page      IssuePage
+	err       error
+}
+
+type issueSearchDebounceMsg struct {
+	requestID uint64
+}
+
+type issueSearchModel struct {
+	list        list.Model
+	input       textinput.Model
+	fetch       issuePageFetcher
+	query       string
+	cursor      string
+	hasNextPage bool
+	loading     bool
+	requestID   uint64
+	selected    *Issue
+	cancelled   bool
+	err         error
+}
+
+func newIssueSearchModel(fetch issuePageFetcher) issueSearchModel {
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = false
+	issueList := list.New(nil, delegate, 80, 20)
+	issueList.Title = "Issue"
+	issueList.SetShowFilter(false)
+	issueList.SetShowPagination(false)
+	issueList.SetFilteringEnabled(false)
+
+	input := textinput.New()
+	input.Prompt = "Search: "
+	input.Placeholder = "Type to search the default team"
+	input.Focus()
+
+	return issueSearchModel{
+		list:      issueList,
+		input:     input,
+		fetch:     fetch,
+		loading:   true,
+		requestID: 1,
+	}
+}
+
+func (m issueSearchModel) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink, m.fetchPage("", m.requestID))
+}
+
+func (m issueSearchModel) fetchPage(cursor string, requestID uint64) tea.Cmd {
+	query := m.query
+	return func() tea.Msg {
+		page, err := m.fetch(query, cursor)
+		return issuePageMsg{requestID: requestID, cursor: cursor, page: page, err: err}
+	}
+}
+
+func (m *issueSearchModel) beginSearch(query string) tea.Cmd {
+	m.query = strings.TrimSpace(query)
+	m.cursor = ""
+	m.hasNextPage = false
+	m.loading = true
+	m.err = nil
+	m.requestID++
+	m.list.SetItems(nil)
+	requestID := m.requestID
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+		return issueSearchDebounceMsg{requestID: requestID}
+	})
+}
+
+func issuesToListItems(issues []Issue) []list.Item {
+	items := make([]list.Item, len(issues))
+	for i, issue := range issues {
+		items[i] = issueSearchItem{issue: issue}
+	}
+	return items
+}
+
+func (m *issueSearchModel) loadNextPage() tea.Cmd {
+	if m.loading || !m.hasNextPage || m.cursor == "" {
+		return nil
+	}
+	m.loading = true
+	m.err = nil
+	return m.fetchPage(m.cursor, m.requestID)
+}
+
+func (m issueSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case issueSearchDebounceMsg:
+		if msg.requestID != m.requestID {
+			return m, nil
+		}
+		return m, m.fetchPage("", msg.requestID)
+
+	case issuePageMsg:
+		if msg.requestID != m.requestID {
+			return m, nil
+		}
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+
+		m.err = nil
+		m.cursor = msg.page.EndCursor
+		m.hasNextPage = msg.page.HasNextPage && msg.page.EndCursor != ""
+		items := issuesToListItems(msg.page.Issues)
+		if msg.cursor != "" {
+			items = append(m.list.Items(), items...)
+		}
+		cmds = append(cmds, m.list.SetItems(items))
+
+	case tea.WindowSizeMsg:
+		m.list.SetSize(max(20, msg.Width), max(8, msg.Height-3))
+
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.cancelled = true
+			return m, tea.Quit
+		case "enter":
+			if item, ok := m.list.SelectedItem().(issueSearchItem); ok {
+				issue := item.issue
+				m.selected = &issue
+				return m, tea.Quit
+			}
+			return m, nil
+		case "up":
+			m.list.CursorUp()
+			return m, nil
+		case "down":
+			if m.list.Index() >= len(m.list.Items())-1 {
+				return m, m.loadNextPage()
+			}
+			m.list.CursorDown()
+			return m, nil
+		case "pgdown", "end":
+			if msg.String() == "end" {
+				m.list.GoToEnd()
+			}
+			if !m.list.Paginator.OnLastPage() {
+				m.list.NextPage()
+				return m, nil
+			}
+			if m.hasNextPage {
+				return m, m.loadNextPage()
+			}
+			m.list.GoToEnd()
+			return m, nil
+		case "pgup":
+			m.list.PrevPage()
+			return m, nil
+		case "home":
+			m.list.GoToStart()
+			return m, nil
+		}
+
+		oldQuery := strings.TrimSpace(m.input.Value())
+		var inputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg)
+		cmds = append(cmds, inputCmd)
+		if query := strings.TrimSpace(m.input.Value()); query != oldQuery {
+			cmds = append(cmds, m.beginSearch(query))
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	var inputCmd, listCmd tea.Cmd
+	m.input, inputCmd = m.input.Update(msg)
+	m.list, listCmd = m.list.Update(msg)
+	cmds = append(cmds, inputCmd, listCmd)
+	return m, tea.Batch(cmds...)
+}
+
+func (m issueSearchModel) View() tea.View {
+	status := ""
+	switch {
+	case m.err != nil:
+		status = fmt.Sprintf("\nError fetching issues: %v", m.err)
+	case m.loading:
+		status = "\nLoading issues..."
+	case !m.loading && len(m.list.Items()) == 0:
+		status = "\nNo matching issues found"
+	case m.hasNextPage:
+		status = "\nMore results load when you reach the end"
+	}
+
+	view := tea.NewView(m.input.View() + "\n" + m.list.View() + status)
+	view.AltScreen = true
+	return view
+}
+
+func runIssuePicker(fetch issuePageFetcher) (Issue, bool, error) {
+	model, err := tea.NewProgram(newIssueSearchModel(fetch)).Run()
+	if err != nil {
+		return Issue{}, false, err
+	}
+	result := model.(issueSearchModel)
+	if result.cancelled || result.selected == nil {
+		return Issue{}, false, nil
+	}
+	return *result.selected, true, nil
+}
+
 func runIssueSearch(apiKey, searchTerm string, output BranchOutputOptions) {
 	selections := loadUserSelections()
 	teamId := requireDefaultTeam(selections)
 
-	issues, err := fetchTeamIssues(apiKey, teamId)
-	if err != nil {
-		fmt.Printf("❌ Error fetching issues: %v\n", err)
-		os.Exit(1)
-	}
-	if len(issues) == 0 {
-		fmt.Println("No issues found for the default team")
-		return
-	}
 	if searchTerm != "" {
-		issue, found := findBestIssue(issues, searchTerm)
+		page, err := fetchTeamIssuePage(apiKey, teamId, searchTerm, "")
+		if err != nil {
+			fmt.Printf("❌ Error fetching issues: %v\n", err)
+			os.Exit(1)
+		}
+		issue, found := findBestIssue(page.Issues, searchTerm)
 		if !found {
 			fmt.Fprintf(os.Stderr, "No issue matched %q\n", searchTerm)
 			os.Exit(1)
@@ -2311,32 +2557,16 @@ func runIssueSearch(apiKey, searchTerm string, output BranchOutputOptions) {
 		return
 	}
 
-	issueByKey := make(map[string]Issue, len(issues))
-	options := make([]huh.Option[string], len(issues))
-	for i, issue := range issues {
-		key := issue.Identifier + " " + issue.Title
-		issueByKey[key] = issue
-		options[i] = huh.Option[string]{Key: key, Value: key}
-	}
-
-	selectedIssueKey := ""
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Issue").
-				Description("Filter issues from the default team").
-				Options(options...).
-				Filtering(true).
-				Value(&selectedIssueKey),
-		),
-	)
-
-	if err := form.Run(); err != nil {
+	issue, selected, err := runIssuePicker(func(query, cursor string) (IssuePage, error) {
+		return fetchTeamIssuePage(apiKey, teamId, query, cursor)
+	})
+	if err != nil {
 		fmt.Println("Issue selection cancelled or error:", err)
 		os.Exit(1)
 	}
-
-	issue := issueByKey[selectedIssueKey]
+	if !selected {
+		return
+	}
 	outputIssueResult(issue, output)
 }
 
