@@ -90,6 +90,6 @@ run = "aube --dir website install --frozen-lockfile && ./scripts/build-versioned
 
 [tools]
 aube = "2.2.12"
-go = "1.26.5"
+go = "1.27.1"
 goreleaser = "2"
 node = "24"
