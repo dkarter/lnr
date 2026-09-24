@@ -1,10 +1,10 @@
 module linear-ticket-form
 
-go 1.25.8
+go 1.26.0
 
 require (
 	charm.land/bubbles/v2 v2.0.0
-	charm.land/bubbletea/v2 v2.0.9
+	charm.land/bubbletea/v2 v2.0.10
 	charm.land/huh/v2 v2.0.3
 	github.com/atotto/clipboard v0.1.4
 	github.com/spf13/cobra v1.10.2
