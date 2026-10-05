@@ -45,5 +45,7 @@ lnr issue create -c --title "Fix flaky deployment check" \
 Always provide `--title` to `issue create` and a title argument to `quick`.
 Never combine `--json`, `--copy`, or `--checkout` with each other.
 Always provide `--force` with `issue delete`.
+Never run `issue search` or `is` unattended: both always open a picker, even with
+search text and `--json`, and require the user to confirm an issue.
 `issue delete` requires `LINEAR_API_KEY`; Linear's hosted OAuth service does
 not expose issue deletion.

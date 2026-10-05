@@ -7,7 +7,7 @@ description: Command map and common flags for lnr.
 | --- | --- |
 | `lnr quick [TITLE]` | Create with saved defaults |
 | `lnr issue create` | Create interactively or with flags |
-| `lnr issue search [SEARCH]` | Pick an issue or print the best match |
+| `lnr issue search [SEARCH]` | Pick an issue interactively with optional prefilled search text |
 | `lnr issue update ISSUE` | Update title, description, team, status, or project |
 | `lnr issue delete ISSUE` | Delete with confirmation |
 | `lnr auth login` | Start browser OAuth |

@@ -1737,8 +1737,8 @@ func findTeam(teams []Team, teamId string) *Team {
 
 func requireDefaultTeam(selections UserSelections) string {
 	if selections.TeamId == "" {
-		fmt.Println("❌ No default team set")
-		fmt.Println("Run `lnr config set-team` first")
+		fmt.Fprintln(os.Stderr, "❌ No default team set")
+		fmt.Fprintln(os.Stderr, "Run `lnr config set-team` first")
 		os.Exit(1)
 	}
 
@@ -2261,60 +2261,6 @@ func runConfigure(apiKey string) {
 	runSetStatus(apiKey)
 }
 
-func issueSearchScore(issue Issue, term string) int {
-	query := strings.ToLower(strings.TrimSpace(term))
-	if query == "" {
-		return 0
-	}
-
-	identifier := strings.ToLower(issue.Identifier)
-	title := strings.ToLower(issue.Title)
-	searchText := identifier + " " + title
-	if query == identifier {
-		return 1000
-	}
-	if strings.Contains(identifier, query) {
-		return 900 + len(query)
-	}
-	if strings.Contains(title, query) {
-		return 700 + len(query)
-	}
-	if strings.Contains(searchText, query) {
-		return 600 + len(query)
-	}
-
-	score := 0
-	queryIndex := 0
-	for _, r := range searchText {
-		if queryIndex >= len(query) {
-			break
-		}
-		if byte(r) == query[queryIndex] {
-			score++
-			queryIndex++
-		}
-	}
-	if queryIndex != len(query) {
-		return 0
-	}
-
-	return score
-}
-
-func findBestIssue(issues []Issue, term string) (Issue, bool) {
-	var bestIssue Issue
-	bestScore := 0
-	for _, issue := range issues {
-		score := issueSearchScore(issue, term)
-		if score > bestScore {
-			bestScore = score
-			bestIssue = issue
-		}
-	}
-
-	return bestIssue, bestScore > 0
-}
-
 type issueSearchItem struct {
 	issue Issue
 }
@@ -2350,7 +2296,7 @@ type issueSearchModel struct {
 	err         error
 }
 
-func newIssueSearchModel(fetch issuePageFetcher) issueSearchModel {
+func newIssueSearchModel(fetch issuePageFetcher, searchTerm string) issueSearchModel {
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = false
 	issueList := list.New(nil, delegate, 80, 20)
@@ -2362,12 +2308,15 @@ func newIssueSearchModel(fetch issuePageFetcher) issueSearchModel {
 	input := textinput.New()
 	input.Prompt = "Search: "
 	input.Placeholder = "Type to search the default team"
+	input.SetValue(searchTerm)
+	input.CursorEnd()
 	input.Focus()
 
 	return issueSearchModel{
 		list:      issueList,
 		input:     input,
 		fetch:     fetch,
+		query:     strings.TrimSpace(searchTerm),
 		loading:   true,
 		requestID: 1,
 	}
@@ -2525,8 +2474,10 @@ func (m issueSearchModel) View() tea.View {
 	return view
 }
 
-func runIssuePicker(fetch issuePageFetcher) (Issue, bool, error) {
-	model, err := tea.NewProgram(newIssueSearchModel(fetch)).Run()
+func runIssuePicker(fetch issuePageFetcher, searchTerm string, options ...tea.ProgramOption) (Issue, bool, error) {
+	// Keep the terminal UI separate from branch names and JSON captured by callers.
+	options = append(options, tea.WithOutput(os.Stderr))
+	model, err := tea.NewProgram(newIssueSearchModel(fetch, searchTerm), options...).Run()
 	if err != nil {
 		return Issue{}, false, err
 	}
@@ -2538,36 +2489,30 @@ func runIssuePicker(fetch issuePageFetcher) (Issue, bool, error) {
 }
 
 func runIssueSearch(apiKey, searchTerm string, output BranchOutputOptions) {
+	err := runIssueSearchWithPicker(apiKey, searchTerm, output, func(fetch issuePageFetcher, query string) (Issue, bool, error) {
+		return runIssuePicker(fetch, query)
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Issue selection cancelled or error:", err)
+		os.Exit(1)
+	}
+}
+
+func runIssueSearchWithPicker(apiKey, searchTerm string, output BranchOutputOptions, pick func(issuePageFetcher, string) (Issue, bool, error)) error {
 	selections := loadUserSelections()
 	teamId := requireDefaultTeam(selections)
 
-	if searchTerm != "" {
-		page, err := fetchTeamIssuePage(apiKey, teamId, searchTerm, "")
-		if err != nil {
-			fmt.Printf("❌ Error fetching issues: %v\n", err)
-			os.Exit(1)
-		}
-		issue, found := findBestIssue(page.Issues, searchTerm)
-		if !found {
-			fmt.Fprintf(os.Stderr, "No issue matched %q\n", searchTerm)
-			os.Exit(1)
-		}
-
-		outputIssueResult(issue, output)
-		return
-	}
-
-	issue, selected, err := runIssuePicker(func(query, cursor string) (IssuePage, error) {
+	issue, selected, err := pick(func(query, cursor string) (IssuePage, error) {
 		return fetchTeamIssuePage(apiKey, teamId, query, cursor)
-	})
+	}, searchTerm)
 	if err != nil {
-		fmt.Println("Issue selection cancelled or error:", err)
-		os.Exit(1)
+		return err
 	}
 	if !selected {
-		return
+		return nil
 	}
 	outputIssueResult(issue, output)
+	return nil
 }
 
 func printSkill(w io.Writer) {
@@ -3051,7 +2996,7 @@ func newIssueSearchCommand(use, short, example string, rootJSON *bool, handlers 
 	cmd := &cobra.Command{
 		Use:                use,
 		Short:              short,
-		Long:               "Find an issue in the default team. With no search text, open an interactive issue picker. Prints the Linear branch name by default.",
+		Long:               "Open an interactive issue picker in the default team. SEARCH prefills the editable search input; press Enter to confirm an issue, or Esc/Ctrl+C to cancel without output. The picker renders to stderr. Prints the Linear branch name by default to stdout, or the selected issue as JSON with --json.",
 		Example:            example,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
