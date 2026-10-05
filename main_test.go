@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -996,26 +997,231 @@ func TestCheckoutBranch(t *testing.T) {
 	}
 }
 
-func TestFindBestIssue(t *testing.T) {
-	issues := []Issue{
-		{Identifier: "PLT-123", Title: "Fix deployment check"},
-		{Identifier: "PLT-456", Title: "Update readme"},
+func TestIssueSearchAlwaysUsesPicker(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := saveUserSelections(UserSelections{TeamId: "test-team"}); err != nil {
+		t.Fatal(err)
 	}
-
-	issue, found := findBestIssue(issues, "deploy")
-	if !found {
-		t.Fatal("expected issue match")
-	}
-	if issue.Identifier != "PLT-123" {
-		t.Fatalf("expected issue %q, got %q", "PLT-123", issue.Identifier)
+	for _, query := range []string{"deployment check", "", "   "} {
+		for _, result := range []string{"selected", "cancelled", "error"} {
+			t.Run(fmt.Sprintf("query=%q/%s", query, result), func(t *testing.T) {
+				stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stdout.Close()
+				original := os.Stdout
+				os.Stdout = stdout
+				defer func() { os.Stdout = original }()
+				calls := 0
+				err = runIssueSearchWithPicker("test-auth", query, BranchOutputOptions{JSON: true},
+					func(fetch issuePageFetcher, gotQuery string) (Issue, bool, error) {
+						calls++
+						if fetch == nil || gotQuery != query {
+							t.Fatalf("expected picker with query %q, got %q", query, gotQuery)
+						}
+						if result == "error" {
+							return Issue{}, false, fmt.Errorf("picker failed")
+						}
+						return Issue{Identifier: "PLT-1", BranchName: "plt-1-deployment"}, result == "selected", nil
+					})
+				if calls != 1 || (err != nil) != (result == "error") {
+					t.Fatalf("unexpected picker calls=%d error=%v", calls, err)
+				}
+				out, err := os.ReadFile(stdout.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result != "selected" {
+					if len(out) != 0 {
+						t.Fatalf("unconfirmed picker wrote stdout: %q", out)
+					}
+					return
+				}
+				var issue Issue
+				if err := json.Unmarshal(out, &issue); err != nil || issue.Identifier != "PLT-1" {
+					t.Fatalf("unexpected selected JSON: %q; error=%v", out, err)
+				}
+			})
+		}
 	}
 }
 
-func TestFindBestIssueNoMatch(t *testing.T) {
-	issues := []Issue{{Identifier: "PLT-123", Title: "Fix deployment check"}}
-	_, found := findBestIssue(issues, "zzz")
-	if found {
-		t.Fatal("did not expect issue match")
+func TestRequireDefaultTeamDiagnosticsUseStderr(t *testing.T) {
+	if os.Getenv("LNR_TEST_REQUIRE_TEAM") == "1" {
+		requireDefaultTeam(UserSelections{})
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRequireDefaultTeamDiagnosticsUseStderr$")
+	cmd.Env = append(os.Environ(), "LNR_TEST_REQUIRE_TEAM=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected missing-team failure")
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "No default team set") || !strings.Contains(stderr.String(), "lnr config set-team") {
+		t.Fatalf("unexpected diagnostics: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestIssueSearchHelpExplainsInteractiveJSON(t *testing.T) {
+	for _, path := range [][]string{{"issue", "search"}, {"is"}} {
+		output, err := executeCommand(t, stubCommandHandlers(new(int)), append(path, "--help")...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, phrase := range []string{"interactive issue picker", "SEARCH prefills the editable search input", "press Enter to confirm", "cancel without output", "renders to stderr", "JSON with --json"} {
+			if !strings.Contains(output, phrase) {
+				t.Fatalf("expected %q in help: %s", phrase, output)
+			}
+		}
+	}
+}
+
+func TestIssueSearchPrefilledInputRequiresConfirmation(t *testing.T) {
+	for _, input := range []string{"deployment", "  deployment  ", "", "   "} {
+		t.Run(fmt.Sprintf("input=%q", input), func(t *testing.T) {
+			var query, cursor string
+			model := newIssueSearchModel(func(q, c string) (IssuePage, error) {
+				query, cursor = q, c
+				return IssuePage{Issues: []Issue{{Identifier: "PLT-1", Title: "Deployment"}}}, nil
+			}, input)
+			if model.input.Value() != input || model.query != strings.TrimSpace(input) || !model.input.Focused() {
+				t.Fatalf("unexpected prefilled input: value=%q query=%q focused=%v", model.input.Value(), model.query, model.input.Focused())
+			}
+			// Exercise the actual initial command, not a manually constructed response.
+			var page issuePageMsg
+			for _, cmd := range model.Init()().(tea.BatchMsg) {
+				if msg, ok := cmd().(issuePageMsg); ok {
+					page = msg
+				}
+			}
+			updated, _ := model.Update(page)
+			model = updated.(issueSearchModel)
+			if query != strings.TrimSpace(input) || cursor != "" {
+				t.Fatalf("unexpected initial request: query=%q cursor=%q", query, cursor)
+			}
+			if model.selected != nil || model.cancelled || len(model.list.Items()) != 1 {
+				t.Fatal("initial results must remain in the picker without selection")
+			}
+			updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			model = updated.(issueSearchModel)
+			if model.selected == nil || model.selected.Identifier != "PLT-1" || cmd == nil {
+				t.Fatal("expected explicit Enter to select the issue")
+			}
+		})
+	}
+}
+
+func TestIssueSearchPrefilledInputCanBeEditedAndCleared(t *testing.T) {
+	var query string
+	model := newIssueSearchModel(func(q, _ string) (IssuePage, error) {
+		query = q
+		return IssuePage{}, nil
+	}, "deploy")
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	model = updated.(issueSearchModel)
+	if model.input.Value() != "deploys" || model.query != "deploys" {
+		t.Fatal("expected typing to edit the prefilled input at its end")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	model = updated.(issueSearchModel)
+	updated, cmd := model.Update(issueSearchDebounceMsg{requestID: model.requestID})
+	model = updated.(issueSearchModel)
+	updated, _ = model.Update(cmd())
+	model = updated.(issueSearchModel)
+	if model.input.Value() != "" || model.query != "" || query != "" {
+		t.Fatal("clearing the input must fetch the unfiltered first page")
+	}
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if updated.(issueSearchModel).selected != nil {
+		t.Fatal("Enter must not select an issue from empty results")
+	}
+}
+
+func TestIssuePickerStderrAndJSONStdout(t *testing.T) {
+	for _, key := range []string{"\r", "\x1b", "\x03"} {
+		t.Run(fmt.Sprintf("key=%q", key), func(t *testing.T) {
+			stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdout.Close()
+			stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stderr.Close()
+			originalOut, originalErr := os.Stdout, os.Stderr
+			os.Stdout, os.Stderr = stdout, stderr
+			defer func() { os.Stdout, os.Stderr = originalOut, originalErr }()
+
+			input, writer := io.Pipe()
+			defer input.Close()
+			defer writer.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			pageReady := make(chan struct{}, 1)
+			inputDone := make(chan error, 1)
+			go func() {
+				select {
+				case <-pageReady:
+					_, err := io.WriteString(writer, key)
+					inputDone <- err
+				case <-ctx.Done():
+					inputDone <- ctx.Err()
+				}
+			}()
+			issue, selected, err := runIssuePicker(func(query, cursor string) (IssuePage, error) {
+				if query != "deployment" || cursor != "" {
+					return IssuePage{}, fmt.Errorf("unexpected request %q %q", query, cursor)
+				}
+				return IssuePage{Issues: []Issue{{Identifier: "PLT-1", Title: "Deployment", BranchName: "plt-1-deployment"}}}, nil
+			}, "deployment", tea.WithInput(input), tea.WithContext(ctx), tea.WithWindowSize(80, 24),
+				tea.WithEnvironment([]string{"TERM=xterm-256color"}), tea.WithoutSignalHandler(),
+				tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+					if _, ok := msg.(issuePageMsg); ok {
+						pageReady <- struct{}{}
+					}
+					return msg
+				}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := <-inputDone; err != nil {
+				t.Fatal(err)
+			}
+			if selected != (key == "\r") {
+				t.Fatalf("unexpected selection: %v", selected)
+			}
+			if selected {
+				outputIssueResult(issue, BranchOutputOptions{JSON: true})
+			}
+			out, err := os.ReadFile(stdout.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ui, err := os.ReadFile(stderr.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(ui, []byte("Search:")) || !bytes.Contains(ui, []byte("deployment")) {
+				t.Fatalf("expected prefilled picker on stderr, got %q", ui)
+			}
+			if !selected {
+				if len(out) != 0 {
+					t.Fatalf("cancellation wrote stdout: %q", out)
+				}
+				return
+			}
+			var result Issue
+			if err := json.Unmarshal(out, &result); err != nil {
+				t.Fatalf("stdout must contain only JSON: %v; output=%q", err, out)
+			}
+			if result.Identifier != issue.Identifier || result.BranchName != issue.BranchName {
+				t.Fatalf("unexpected JSON issue: %+v", result)
+			}
+		})
 	}
 }
 
@@ -1029,7 +1235,7 @@ func TestIssueSearchInitialPage(t *testing.T) {
 			HasNextPage: true,
 			EndCursor:   "page-2",
 		}, nil
-	})
+	}, "")
 
 	msg := model.fetchPage("", model.requestID)()
 	updated, _ := model.Update(msg)
@@ -1048,7 +1254,7 @@ func TestIssueSearchQueryFetchesFilteredFirstPage(t *testing.T) {
 	model := newIssueSearchModel(func(gotQuery, gotCursor string) (IssuePage, error) {
 		query, cursor = gotQuery, gotCursor
 		return IssuePage{Issues: []Issue{{Identifier: "PLT-2", Title: "Deployment check"}}}, nil
-	})
+	}, "")
 	for _, char := range "deployment" {
 		updated, _ := model.Update(tea.KeyPressMsg{Code: char, Text: string(char)})
 		model = updated.(issueSearchModel)
@@ -1082,7 +1288,7 @@ func TestIssueSearchAppendsSubsequentPage(t *testing.T) {
 			HasNextPage: true,
 			EndCursor:   "page-2",
 		}, nil
-	})
+	}, "")
 
 	updated, _ := model.Update(model.fetchPage("", model.requestID)())
 	model = updated.(issueSearchModel)
@@ -1098,7 +1304,7 @@ func TestIssueSearchAppendsSubsequentPage(t *testing.T) {
 }
 
 func TestIssueSearchLoadsMoreAtEnd(t *testing.T) {
-	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil }, "")
 	updated, _ := model.Update(issuePageMsg{
 		requestID: model.requestID,
 		page: IssuePage{
@@ -1117,7 +1323,7 @@ func TestIssueSearchLoadsMoreAtEnd(t *testing.T) {
 }
 
 func TestIssueSearchIgnoresStaleResponse(t *testing.T) {
-	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+	model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil }, "")
 	staleRequestID := model.requestID
 	model.beginSearch("new query")
 
@@ -1134,7 +1340,7 @@ func TestIssueSearchIgnoresStaleResponse(t *testing.T) {
 
 func TestIssueSearchEmptyAndErrorStates(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil })
+		model := newIssueSearchModel(func(string, string) (IssuePage, error) { return IssuePage{}, nil }, "")
 		updated, _ := model.Update(model.fetchPage("", model.requestID)())
 		model = updated.(issueSearchModel)
 		if !strings.Contains(model.View().Content, "No matching issues found") {
@@ -1145,7 +1351,7 @@ func TestIssueSearchEmptyAndErrorStates(t *testing.T) {
 	t.Run("error", func(t *testing.T) {
 		model := newIssueSearchModel(func(string, string) (IssuePage, error) {
 			return IssuePage{}, fmt.Errorf("request failed")
-		})
+		}, "")
 		updated, _ := model.Update(model.fetchPage("", model.requestID)())
 		model = updated.(issueSearchModel)
 		if !strings.Contains(model.View().Content, "Error fetching issues: request failed") {

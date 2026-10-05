@@ -205,7 +205,7 @@ Return JSON:
 lnr quick --json "Fix flaky deployment check"
 ```
 
-Fuzzy find a recent issue in the default team and print its branch name:
+Interactively find an issue in the default team and print its branch name:
 
 ```bash
 lnr issue search
@@ -224,7 +224,7 @@ lnr issue search --checkout "deployment check"
 lnr is -c "deployment check"
 ```
 
-Search non-interactively and print the best match:
+Open the picker with editable, prefilled search text:
 
 ```bash
 lnr issue search "deployment check"
@@ -233,6 +233,15 @@ lnr issue search --json "deployment check"
 # Short alias
 lnr is --json "deployment check"
 ```
+
+Search always opens the picker, including with `--json` or positional search
+text. The initial request uses that text to filter results; empty input lists
+the team's issues. Edit the text, navigate with the arrow keys, and press Enter
+to confirm an issue. Esc or Ctrl+C cancels without writing a result.
+
+The picker renders to stderr, leaving stdout for the selected branch name or
+JSON only. Tools can capture stdout while forwarding stdin and stderr to the
+terminal; `--json` changes the result format, not the interactive behavior.
 
 Generate shell completions:
 
