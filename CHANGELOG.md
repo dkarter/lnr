@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/dkarter/lnr/compare/v3.1.0...v3.1.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* keep issue search interactive and visible ([#44](https://github.com/dkarter/lnr/issues/44)) ([8a14c78](https://github.com/dkarter/lnr/commit/8a14c78918e89e458c5edf53b976608521f266ff))
+
 ## [3.1.0](https://github.com/dkarter/lnr/compare/v3.0.1...v3.1.0) (2026-09-15)
 
 
