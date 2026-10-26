@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/dkarter/lnr/compare/v3.1.1...v3.2.0) (2026-10-26)
+
+
+### Features
+
+* add noninteractive issue status lookup ([#49](https://github.com/dkarter/lnr/issues/49)) ([8985074](https://github.com/dkarter/lnr/commit/89850744026ee8ea45d120c4e7999ecb362b495c))
+
 ## [3.1.1](https://github.com/dkarter/lnr/compare/v3.1.0...v3.1.1) (2026-10-05)
 
 
