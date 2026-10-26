@@ -24,6 +24,17 @@ lnr issue create --json --title "Fix flaky deployment check" \
 	--project "Release readiness"
 ```
 
+Read an issue and its current status without prompting:
+
+```bash
+lnr issue get PLT-123 --json
+```
+
+The result includes `issueId`, `branchName`, `title`, `url`, and
+`status: {id, name, type}`. Check `status.type` for `completed` or `canceled`
+instead of matching custom status names. This command never starts browser login;
+if authentication is unavailable, it fails and asks you to sign in separately.
+
 Update or delete an issue without prompting:
 
 ```bash

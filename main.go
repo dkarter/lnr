@@ -53,6 +53,11 @@ type IssuePage struct {
 	EndCursor   string
 }
 
+type IssueDetails struct {
+	Issue
+	Status WorkflowState `json:"status"`
+}
+
 type CreatedIssue = Issue
 
 type IssueCreateOptions struct {
@@ -198,14 +203,16 @@ type MCPPage[T any] struct {
 }
 
 type MCPIssue struct {
-	ID            string `json:"id"`
-	UUID          string `json:"uuid"`
-	Title         string `json:"title"`
-	Description   string `json:"description"`
-	URL           string `json:"url"`
-	GitBranchName string `json:"gitBranchName"`
-	Team          string `json:"team"`
-	TeamID        string `json:"teamId"`
+	ID            string        `json:"id"`
+	UUID          string        `json:"uuid"`
+	Title         string        `json:"title"`
+	Description   string        `json:"description"`
+	URL           string        `json:"url"`
+	GitBranchName string        `json:"gitBranchName"`
+	Team          string        `json:"team"`
+	TeamID        string        `json:"teamId"`
+	Status        string        `json:"status"`
+	State         WorkflowState `json:"-"`
 }
 
 func getCacheDir() string {
@@ -320,34 +327,11 @@ func clearAccountData() error {
 }
 
 func getLinearAuthHeader() string {
-	apiKey := os.Getenv("LINEAR_API_KEY")
-	if apiKey != "" {
-		return apiKey
-	}
-
-	accessToken := os.Getenv("LINEAR_OAUTH_ACCESS_TOKEN")
-	if accessToken != "" {
-		return bearerAuthHeader(accessToken)
+	if header, err := getNonInteractiveAuthHeader(); err == nil {
+		return header
 	}
 
 	scopes := oauthScopes()
-
-	if cache, found := loadOAuthTokenCache(scopes); found {
-		if cache.ExpiresAt.After(time.Now().Add(oauthTokenRefreshSkew)) {
-			return mcpAuthHeader(cache.AccessToken)
-		}
-
-		if cache.RefreshToken != "" && cache.ClientID != "" {
-			token, err := refreshOAuthAccessToken(cache.ClientID, cache.RefreshToken, scopes)
-			if err == nil {
-				if err := saveOAuthToken(cache.ClientID, scopes, token, cache.RefreshToken); err == nil {
-					return mcpAuthHeader(token.AccessToken)
-				}
-			}
-			fmt.Println("Cached Linear OAuth token expired; starting a new browser login.")
-		}
-	}
-
 	if err := clearAccountData(); err != nil {
 		fmt.Printf("❌ Error clearing saved account data: %v\n", err)
 		os.Exit(1)
@@ -361,6 +345,36 @@ func getLinearAuthHeader() string {
 	}
 
 	return mcpAuthHeader(token.AccessToken)
+}
+
+func getNonInteractiveAuthHeader() (string, error) {
+	apiKey := os.Getenv("LINEAR_API_KEY")
+	if apiKey != "" {
+		return apiKey, nil
+	}
+
+	accessToken := os.Getenv("LINEAR_OAUTH_ACCESS_TOKEN")
+	if accessToken != "" {
+		return bearerAuthHeader(accessToken), nil
+	}
+
+	scopes := oauthScopes()
+
+	if cache, found := loadOAuthTokenCache(scopes); found {
+		if cache.ExpiresAt.After(time.Now().Add(oauthTokenRefreshSkew)) {
+			return mcpAuthHeader(cache.AccessToken), nil
+		}
+
+		if cache.RefreshToken != "" && cache.ClientID != "" {
+			token, err := refreshOAuthAccessToken(cache.ClientID, cache.RefreshToken, scopes)
+			if err == nil {
+				if err := saveOAuthToken(cache.ClientID, scopes, token, cache.RefreshToken); err == nil {
+					return mcpAuthHeader(token.AccessToken), nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("Linear authentication unavailable; run lnr auth login or configure LINEAR_API_KEY")
 }
 
 func oauthScopes() string {
@@ -1936,7 +1950,7 @@ func fetchIssue(apiKey, identifier string) (MCPIssue, error) {
 	}
 
 	query := `query Issue($id: String!) {
-		issue(id: $id) { id identifier title description url branchName team { id name } }
+		issue(id: $id) { id identifier title description url branchName team { id name } state { id name type } }
 	}`
 	result, err := makeLinearRequest(apiKey, query, map[string]interface{}{"id": identifier})
 	if err != nil {
@@ -1962,7 +1976,45 @@ func fetchIssue(apiKey, identifier string) (MCPIssue, error) {
 		issue.Team = getString(rawTeam, "name")
 		issue.TeamID = getString(rawTeam, "id")
 	}
+	if state, ok := raw["state"].(map[string]interface{}); ok {
+		issue.State = WorkflowState{ID: getString(state, "id"), Name: getString(state, "name"), Type: getString(state, "type")}
+	}
 	return issue, nil
+}
+
+// Fetch current status rather than cached defaults: callers use this to decide
+// whether an issue is already closed.
+func getIssue(apiKey, identifier string) (IssueDetails, error) {
+	issue, err := fetchIssue(apiKey, identifier)
+	if err != nil {
+		return IssueDetails{}, err
+	}
+	if issue.ID == "" {
+		return IssueDetails{}, fmt.Errorf("issue %q was not found", identifier)
+	}
+	if authHeader, ok := splitMCPAuthHeader(apiKey); ok {
+		team := issue.TeamID
+		if team == "" {
+			team = issue.Team
+		}
+		if team == "" || issue.Status == "" {
+			return IssueDetails{}, fmt.Errorf("issue %q did not include its team and status", identifier)
+		}
+		states, err := fetchMCPWorkflowStates(authHeader, team)
+		if err != nil {
+			return IssueDetails{}, err
+		}
+		for _, state := range states {
+			if state.Name == issue.Status {
+				issue.State = state
+				break
+			}
+		}
+	}
+	if issue.State.Name == "" || issue.State.Type == "" {
+		return IssueDetails{}, fmt.Errorf("could not resolve current workflow status for issue %q", identifier)
+	}
+	return IssueDetails{Issue: issueFromMCP(issue), Status: issue.State}, nil
 }
 
 func issueFromMCP(issue MCPIssue) Issue {
@@ -2606,6 +2658,8 @@ type commandHandlers struct {
 	quick         func(string, string, BranchOutputOptions)
 	create        func(string, IssueCreateOptions)
 	issue         func(string, string, BranchOutputOptions)
+	get           func(string, string) (IssueDetails, error)
+	getAuth       func() (string, error)
 	update        func(string, IssueUpdateOptions) error
 	delete        func(string, IssueDeleteOptions) error
 	confirmDelete func(string) (bool, error)
@@ -2629,6 +2683,8 @@ func defaultCommandHandlers() commandHandlers {
 		quick:         runQuickCreate,
 		create:        runIssueCreate,
 		issue:         runIssueSearch,
+		get:           getIssue,
+		getAuth:       getNonInteractiveAuthHeader,
 		update:        runIssueUpdate,
 		delete:        runIssueDelete,
 		confirmDelete: confirmIssueDelete,
@@ -2787,6 +2843,7 @@ interactively when it needs a description, assignee, or per-issue choices.`,
 		handlers,
 	))
 	issueCmd.AddCommand(newIssueUpdateCommand(&rootJSON, handlers))
+	issueCmd.AddCommand(newIssueGetCommand(&rootJSON, handlers))
 	issueCmd.AddCommand(newIssueDeleteCommand(&rootJSON, handlers))
 	issueSearchAliasCmd := newIssueSearchCommand(
 		"is [flags] [SEARCH]",
@@ -2916,6 +2973,37 @@ Non-interactive creation prints the Linear branch name by default.`,
 	cmd.Flags().BoolVar(&options.JSON, "json", false, "Output the created issue as JSON")
 	cmd.Flags().BoolVar(&options.Copy, "copy", false, "Copy the Linear git branch to the clipboard")
 	cmd.Flags().BoolVarP(&options.Checkout, "checkout", "c", false, "Create and check out the Linear git branch")
+	return cmd
+}
+
+func newIssueGetCommand(rootJSON *bool, handlers commandHandlers) *cobra.Command {
+	var outputJSON bool
+	cmd := &cobra.Command{
+		Use:     "get ISSUE",
+		Short:   "Get an issue and its current workflow status without prompting",
+		Example: "  lnr issue get PLT-123 --json",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			identifier := strings.TrimSpace(args[0])
+			if identifier == "" {
+				return fmt.Errorf("issue identifier cannot be empty")
+			}
+			auth, err := handlers.getAuth()
+			if err != nil {
+				return err
+			}
+			issue, err := handlers.get(auth, identifier)
+			if err != nil {
+				return err
+			}
+			if outputJSON || *rootJSON {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(issue)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nStatus: %s (%s)\n%s\n", issue.Identifier, issue.Title, issue.Status.Name, issue.Status.Type, issue.URL)
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output the issue and workflow status as JSON")
 	return cmd
 }
 

@@ -136,6 +136,19 @@ The interactive workflow includes an optional project picker. `--project`
 accepts a project name or ID and validates that the project belongs to the
 selected team.
 
+Read an issue and its current workflow status without a picker or browser login:
+
+```bash
+lnr issue get PLT-123
+lnr issue get PLT-123 --json
+```
+
+JSON includes `issueId`, `branchName`, `title`, `url`, and a `status` object with
+`id`, `name`, and `type`. Use `status.type` (`completed` or `canceled`) to detect
+closed issues without depending on custom status names. Both API-key and browser
+login credentials are supported; missing or expired credentials that cannot be
+refreshed return an error instead of prompting. Status is fetched fresh.
+
 Update an existing issue. Omitted fields remain unchanged, while
 `--no-project` explicitly removes the current project:
 

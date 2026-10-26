@@ -1,7 +1,22 @@
 ---
-title: Update and delete
-description: Change issue fields or safely remove an issue.
+title: Read, update, and delete
+description: Read current issue status, change fields, or safely remove an issue.
 ---
+
+## Read
+
+Get one issue without an interactive picker:
+
+```sh
+lnr issue get PLT-123
+lnr issue get PLT-123 --json
+```
+
+JSON contains `issueId`, `branchName`, `title`, `url`, and `status: {id, name, type}`.
+Use `status.type` to detect `completed` and `canceled` issues regardless of custom
+status names. Status is fetched fresh, not from cached defaults. This works with
+API keys and saved browser-login credentials, but never starts a browser login.
+If authentication is unavailable, run `lnr auth login` separately.
 
 ## Update
 

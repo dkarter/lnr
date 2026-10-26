@@ -59,6 +59,7 @@ func stubCommandHandlers(executions *int) commandHandlers {
 		quick:         func(string, string, BranchOutputOptions) { run() },
 		create:        func(string, IssueCreateOptions) { run() },
 		issue:         func(string, string, BranchOutputOptions) { run() },
+		getAuth:       func() (string, error) { run(); return "test-auth", nil },
 		update:        func(string, IssueUpdateOptions) error { run(); return nil },
 		delete:        func(string, IssueDeleteOptions) error { run(); return nil },
 		confirmDelete: func(string) (bool, error) { run(); return true, nil },
