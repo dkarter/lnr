@@ -63,7 +63,7 @@ jobs:
         id: release_app_token
         # actions/create-github-app-token v3.2.0 is an immutable release tag; verify immutability before updating:
         # https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
-        uses: actions/create-github-app-token@v3.2.0
+        uses: actions/create-github-app-token@v3.3.0
         with:
           client-id: ${{ vars.RELEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PRIVATE_KEY }}
